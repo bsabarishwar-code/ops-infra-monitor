@@ -1,0 +1,16 @@
+﻿# Build output
+dist/
+build/
+*.spec
+
+# Config with credentials — never commit this
+config.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
