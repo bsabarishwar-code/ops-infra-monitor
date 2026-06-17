@@ -1,0 +1,60 @@
+﻿name: Build Agent EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: "App ID  (e.g. Auk1eb4f78)"
+        required: true
+      store_id:
+        description: "Store ID  (e.g. 488-18)"
+        required: true
+      store_name:
+        description: "Store Name  (e.g. SOMAJIGUDA)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyinstaller requests psutil ping3 urllib3
+
+      - name: Inject constants into agent.py
+        shell: pwsh
+        run: |
+          $src = Get-Content agent.py -Raw -Encoding utf8
+          $src = $src -replace 'PLACEHOLDER_APP_ID',    '${{ github.event.inputs.app_id }}'
+          $src = $src -replace 'PLACEHOLDER_STORE_ID',  '${{ github.event.inputs.store_id }}'
+          $src = $src -replace 'PLACEHOLDER_STORE_NAME','${{ github.event.inputs.store_name }}'
+          $src = $src -replace 'PLACEHOLDER_RELAY_URL',    '${{ secrets.RELAY_URL }}'
+          $src = $src -replace 'PLACEHOLDER_RELAY_SECRET', '${{ secrets.RELAY_SECRET }}'
+          $src = $src -replace 'PLACEHOLDER_DASHBOARD_TOKEN', '${{ secrets.DASHBOARD_TOKEN }}'
+          [System.IO.File]::WriteAllText("$PWD\agent_build.py", $src, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Build EXE
+        run: python -m PyInstaller --onefile --noconsole --name agent agent_build.py
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "agent-${{ github.event.inputs.app_id }}"
+          name: "Agent — ${{ github.event.inputs.store_name }} (${{ github.event.inputs.app_id }})"
+          body: |
+            Agent for store: ${{ github.event.inputs.store_name }}
+            Store ID: ${{ github.event.inputs.store_id }}
+            App ID: ${{ github.event.inputs.app_id }}
+
+            Download agent.exe and run it on the client machine.
+            No installation needed. Runs silently in the background.
+          files: dist/agent.exe
