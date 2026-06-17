@@ -1,0 +1,68 @@
+name: Build OPS-Infra v4
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ops_infra_v4.py'
+      - 'requirements.txt'
+      - '.github/workflows/build-v4.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write config.json (no BOM)
+        shell: pwsh
+        run: |
+          $json = @{
+            dashboard_base_url = "https://dashboard-api.tangoeye.ai"
+            dashboard_token    = "${{ secrets.DASHBOARD_TOKEN }}"
+            auth_style         = "bearer"
+            relay_url          = "${{ secrets.RELAY_URL }}"
+            relay_secret       = "${{ secrets.RELAY_SECRET }}"
+          } | ConvertTo-Json
+          [System.IO.File]::WriteAllText(
+            "${{ github.workspace }}\config.json",
+            $json,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --noconsole --name ops_infra_v4 `
+            --add-data "config.json;." `
+            ops_infra_v4.py
+
+      - name: Generate tag
+        id: tag
+        shell: pwsh
+        run: |
+          $ts = (Get-Date -Format "yyyyMMdd-HHmm")
+          echo "TAG=v4-build-$ts" >> $env:GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          name: "OPS-Infra v4 · ${{ steps.tag.outputs.TAG }}"
+          make_latest: true
+          files: dist/ops_infra_v4.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

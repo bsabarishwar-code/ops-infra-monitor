@@ -20,6 +20,9 @@ RELAY_URL       = "PLACEHOLDER_RELAY_URL"
 RELAY_SECRET    = "PLACEHOLDER_RELAY_SECRET"
 DASHBOARD_BASE  = "https://dashboard-api.tangoeye.ai"
 DASHBOARD_TOKEN = "PLACEHOLDER_DASHBOARD_TOKEN"
+# ── app monitoring constants ─────────────────────────────────────────────────
+APP_EXE            = "TangoEyeStreamer.exe"
+STREAM_FOLDER_ROOT = r"C:\ProgramData\Tango_IT\Tango_Eye_Streamer"
 # ───────────────────────────────────────────────────────────────────────────
 
 POLL_INTERVAL = 15
@@ -123,6 +126,7 @@ def _norm(c):
         "camera_number": str(_pick(c, "cameraNumber", "camera_number", "cameraName", "name", "id", default="CAM")),
         "manufacturer":  _pick(c, "manufacturer", "make", "brand", "vendor", default="Unknown"),
         "stream_name":   str(_pick(c, "streamName", "stream_name", default="")),
+        "stream_id":     str(_pick(c, "streamId", "stream_id", "streamName", "stream_name", default="")),
         "active":        active not in (False, 0, "0", "false", "False", "inactive", "disabled", "DOWN"),
         "is_up":         up     not in (False, 0, "0", "false", "False", "DOWN", "down"),
     }
@@ -386,6 +390,130 @@ def check_camera(cam):
     }
 
 
+# ── app monitoring ────────────────────────────────────────────────────────────
+def _check_process(exe_name):
+    for proc in psutil.process_iter(['name', 'pid', 'status', 'create_time']):
+        try:
+            if proc.info['name'].lower() == exe_name.lower():
+                started    = datetime.datetime.fromtimestamp(proc.info['create_time']).isoformat()
+                uptime_h   = round((time.time() - proc.info['create_time']) / 3600, 1)
+                return {'running': True, 'pid': proc.info['pid'],
+                        'status': proc.info['status'],
+                        'started_at': started, 'uptime_hours': uptime_h}
+        except Exception:
+            pass
+    return {'running': False, 'pid': None, 'status': 'not found',
+            'started_at': None, 'uptime_hours': None}
+
+
+def _get_crash_events(exe_name, days=2):
+    if platform.system() != "Windows":
+        return []
+    app = exe_name.replace(".exe", "")
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue'\n"
+        f"$start=(Get-Date).AddDays(-{days})\n"
+        "$ev=Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000,1001,1002;StartTime=$start}"
+        " -ErrorAction SilentlyContinue\n"
+        f"$filt=$ev|Where-Object{{$_.Message -like '*{app}*'}}\n"
+        "$list=foreach($e in $filt){"
+        "[PSCustomObject]@{time=$e.TimeCreated.ToString('o');id=$e.Id;level=$e.LevelDisplayName;"
+        "msg=(($e.Message -split \"`r?`n\"|Where-Object{$_.Trim()}|Select-Object -First 3)-join' | ')}}\n"
+        "$list|ConvertTo-Json -Compress"
+    )
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=30, creationflags=_NO_WIN)
+        data = json.loads((r.stdout or "").strip())
+        if isinstance(data, dict):
+            data = [data]
+        events = [{"time": d.get("time", ""), "id": str(d.get("id", "")),
+                   "level": d.get("level", ""), "msg": (d.get("msg") or "").strip()}
+                  for d in data]
+        events.sort(key=lambda e: e["time"], reverse=True)
+        return events
+    except Exception:
+        return []
+
+
+def _check_stream_folders(cameras):
+    results = []
+    seen    = set()
+    now     = time.time()
+    cutoff  = now - 3600   # images in last 1 hour = "active"
+
+    for cam in cameras:
+        sid = (cam.get("stream_id") or cam.get("stream_name") or "").strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+
+        folder        = os.path.join(STREAM_FOLDER_ROOT, sid)
+        folder_exists = os.path.isdir(folder)
+        last_modified = None
+        recent        = 0
+        total         = 0
+
+        if folder_exists:
+            try:
+                last_modified = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(folder)).isoformat()
+            except Exception:
+                pass
+            try:
+                for fn in os.listdir(folder):
+                    if fn.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp')):
+                        total += 1
+                        try:
+                            if os.path.getmtime(os.path.join(folder, fn)) > cutoff:
+                                recent += 1
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        if recent > 0:
+            status = "active"
+        elif folder_exists and total > 0:
+            status = "stale"
+        elif folder_exists:
+            status = "empty"
+        else:
+            status = "missing"
+
+        results.append({
+            "stream_id":        sid,
+            "camera_number":    cam.get("camera_number", "—"),
+            "ip":               cam.get("ip", "—"),
+            "folder_exists":    folder_exists,
+            "last_modified":    last_modified,
+            "recent_images_1h": recent,
+            "total_images":     total,
+            "status":           status,
+        })
+    return results
+
+
+def check_app_status(cameras):
+    process        = _check_process(APP_EXE)
+    crashes        = _get_crash_events(APP_EXE, days=2)
+    stream_folders = _check_stream_folders(cameras)
+    return {
+        "app_exe":        APP_EXE,
+        "process":        process,
+        "crashes":        crashes,
+        "stream_folders": stream_folders,
+        "summary": {
+            "process_running": process.get("running", False),
+            "crash_count_2d":  len(crashes),
+            "streams_total":   len(stream_folders),
+            "streams_active":  sum(1 for s in stream_folders if s["status"] == "active"),
+            "streams_stale":   sum(1 for s in stream_folders if s["status"] == "stale"),
+            "streams_missing": sum(1 for s in stream_folders if s["status"] == "missing"),
+        },
+    }
+
+
 # ── main run ──────────────────────────────────────────────────────────────────
 def run_checks():
     cams = fetch_cameras()
@@ -404,6 +532,7 @@ def run_checks():
         "wifi_changes":   get_wifi_change_logs(24),
         "sleep_logs":     get_sleep_wake_logs(24),
         "cameras":        cam_results,
+        "app_status":     check_app_status(cams),
         "summary": {
             "total_cameras":   len(cam_results),
             "cameras_passing": sum(1 for c in cam_results if c["ping"] == "OK"),
