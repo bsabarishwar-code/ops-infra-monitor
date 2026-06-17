@@ -1,0 +1,57 @@
+﻿name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write config.json from secret
+        shell: pwsh
+        run: |
+          $cfg = [ordered]@{
+            dashboard_base_url = "https://dashboard-api.tangoeye.ai"
+            dashboard_token    = "${{ secrets.DASHBOARD_TOKEN }}"
+            auth_style         = "bearer"
+          }
+          $cfg | ConvertTo-Json | Set-Content config.json -Encoding utf8
+
+      - name: Build EXE
+        run: python -m PyInstaller --onefile --noconsole --name ops_infra --add-data "config.json;." ops_infra_v2.py
+
+      - name: Generate release tag
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = "build-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+          echo "TAG=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          name: "OPS-Infra - ${{ steps.tag.outputs.TAG }}"
+          body: |
+            Auto-built from latest source.
+            Download and run ops_infra.exe - no installation needed.
+            Dashboard token is baked in. No config file required.
+          files: dist/ops_infra.exe
+          make_latest: true

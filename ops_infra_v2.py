@@ -63,15 +63,18 @@ except ImportError:
 
 
 # ===========================================================================
-# DASHBOARD API CONFIG  (loaded from config.json next to the EXE)
+# DASHBOARD API CONFIG
+# Priority: config.json next to EXE  >  config.json bundled inside EXE
 # ===========================================================================
 def _config_path():
-    """Return the path to config.json, always next to the running EXE/script."""
-    if getattr(sys, "frozen", False):          # PyInstaller EXE
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "config.json")
+    if getattr(sys, "frozen", False):
+        # User can always override by placing config.json next to the EXE
+        user_cfg = os.path.join(os.path.dirname(sys.executable), "config.json")
+        if os.path.exists(user_cfg):
+            return user_cfg
+        # Fall back to the config bundled into the EXE by PyInstaller (--add-data)
+        return os.path.join(sys._MEIPASS, "config.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 _DEFAULT_CONFIG = {
     "dashboard_base_url": "https://dashboard-api.tangoeye.ai",
@@ -85,18 +88,18 @@ def _load_config():
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            # Merge with defaults so missing keys don't crash
             merged = dict(_DEFAULT_CONFIG)
             merged.update({k: v for k, v in data.items() if k in _DEFAULT_CONFIG})
             return merged
         except Exception:
             pass
-    # Config missing → write a template so the user knows what to fill in
-    try:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(_DEFAULT_CONFIG, fh, indent=2)
-    except Exception:
-        pass
+    # Only write a template when running as a plain script (not frozen EXE)
+    if not getattr(sys, "frozen", False):
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(_DEFAULT_CONFIG, fh, indent=2)
+        except Exception:
+            pass
     return dict(_DEFAULT_CONFIG)
 
 _cfg               = _load_config()
