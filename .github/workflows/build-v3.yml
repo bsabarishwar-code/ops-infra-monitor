@@ -9,6 +9,9 @@ on:
       - '.github/workflows/build-v3.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
