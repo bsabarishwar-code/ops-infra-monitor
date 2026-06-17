@@ -32,7 +32,8 @@ jobs:
             dashboard_token    = "${{ secrets.DASHBOARD_TOKEN }}"
             auth_style         = "bearer"
           }
-          $cfg | ConvertTo-Json | Set-Content config.json -Encoding utf8
+          $json = $cfg | ConvertTo-Json
+          [System.IO.File]::WriteAllText("$PWD\config.json", $json, [System.Text.UTF8Encoding]::new($false))
 
       - name: Build EXE
         run: python -m PyInstaller --onefile --noconsole --name ops_infra --add-data "config.json;." ops_infra_v2.py

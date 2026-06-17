@@ -86,7 +86,7 @@ def _load_config():
     path = _config_path()
     if os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding="utf-8-sig") as fh:
                 data = json.load(fh)
             merged = dict(_DEFAULT_CONFIG)
             merged.update({k: v for k, v in data.items() if k in _DEFAULT_CONFIG})
