@@ -1,17 +1,12 @@
-﻿name: Build Agent EXE
+name: Build Agent EXE
 
 on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'agent.py'
+      - '.github/workflows/build-agent.yml'
   workflow_dispatch:
-    inputs:
-      app_id:
-        description: "App ID  (e.g. Auk1eb4f78)"
-        required: true
-      store_id:
-        description: "Store ID  (e.g. 488-18)"
-        required: true
-      store_name:
-        description: "Store Name  (e.g. SOMAJIGUDA)"
-        required: true
 
 permissions:
   contents: write
@@ -30,31 +25,28 @@ jobs:
       - name: Install dependencies
         run: pip install pyinstaller requests psutil ping3 urllib3
 
-      - name: Inject constants into agent.py
+      - name: Inject relay credentials
         shell: pwsh
         run: |
           $src = Get-Content agent.py -Raw -Encoding utf8
-          $src = $src -replace 'PLACEHOLDER_APP_ID',    '${{ github.event.inputs.app_id }}'
-          $src = $src -replace 'PLACEHOLDER_STORE_ID',  '${{ github.event.inputs.store_id }}'
-          $src = $src -replace 'PLACEHOLDER_STORE_NAME','${{ github.event.inputs.store_name }}'
-          $src = $src -replace 'PLACEHOLDER_RELAY_URL',    '${{ secrets.RELAY_URL }}'
-          $src = $src -replace 'PLACEHOLDER_RELAY_SECRET', '${{ secrets.RELAY_SECRET }}'
+          $src = $src -replace 'PLACEHOLDER_RELAY_URL',       '${{ secrets.RELAY_URL }}'
+          $src = $src -replace 'PLACEHOLDER_RELAY_SECRET',    '${{ secrets.RELAY_SECRET }}'
           $src = $src -replace 'PLACEHOLDER_DASHBOARD_TOKEN', '${{ secrets.DASHBOARD_TOKEN }}'
           [System.IO.File]::WriteAllText("$PWD\agent_build.py", $src, [System.Text.UTF8Encoding]::new($false))
 
-      - name: Build EXE
+      - name: Build universal EXE
         run: python -m PyInstaller --onefile --noconsole --name agent agent_build.py
 
-      - name: Publish release
+      - name: Publish release (always tag agent-universal)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "agent-${{ github.event.inputs.app_id }}"
-          name: "Agent — ${{ github.event.inputs.store_name }} (${{ github.event.inputs.app_id }})"
+          tag_name: agent-universal
+          name: "Agent (Universal Build)"
           body: |
-            Agent for store: ${{ github.event.inputs.store_name }}
-            Store ID: ${{ github.event.inputs.store_id }}
-            App ID: ${{ github.event.inputs.app_id }}
+            Universal agent EXE — app_id is read from the filename at runtime.
 
-            Download agent.exe and run it on the client machine.
-            No installation needed. Runs silently in the background.
+            Download via relay:
+            https://<your-relay>.onrender.com/agent/{app_id}/{store_id}
           files: dist/agent.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,7 +1,9 @@
 """
 OPS-Infra Agent — runs silently on the client machine.
 Polls relay for a trigger, runs all health checks, posts the report back.
-APP_ID/STORE_ID/RELAY_URL/RELAY_SECRET/DASHBOARD_TOKEN replaced at build time.
+App ID is read from own filename (agent-{app_id}.exe).
+Store ID / Name fetched from relay on startup.
+RELAY_URL / RELAY_SECRET / DASHBOARD_TOKEN baked in at build time.
 """
 import os, sys, json, time, socket, platform, subprocess, datetime, winreg
 from concurrent.futures import ThreadPoolExecutor
@@ -14,18 +16,37 @@ except ImportError:
     ping3 = None
 
 # ── baked-in at build time ──────────────────────────────────────────────────
-APP_ID          = "PLACEHOLDER_APP_ID"
-STORE_ID        = "PLACEHOLDER_STORE_ID"
-STORE_NAME      = "PLACEHOLDER_STORE_NAME"
 RELAY_URL       = "PLACEHOLDER_RELAY_URL"
 RELAY_SECRET    = "PLACEHOLDER_RELAY_SECRET"
 DASHBOARD_BASE  = "https://dashboard-api.tangoeye.ai"
 DASHBOARD_TOKEN = "PLACEHOLDER_DASHBOARD_TOKEN"
 # ───────────────────────────────────────────────────────────────────────────
 
-POLL_INTERVAL   = 15
+POLL_INTERVAL = 15
 _NO_WIN = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
 _HDR    = {"X-Secret": RELAY_SECRET}
+
+
+def _get_app_id():
+    exe  = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+    name = os.path.splitext(os.path.basename(exe))[0]   # "agent-Auk1eb4f78"
+    if name.startswith("agent-"):
+        return name[len("agent-"):]
+    return name
+
+
+APP_ID     = _get_app_id()
+STORE_ID   = APP_ID   # overwritten in main() after relay lookup
+STORE_NAME = APP_ID
+
+
+def _fetch_store_config():
+    try:
+        r = requests.get(f"{RELAY_URL}/config/{APP_ID}", headers=_HDR, timeout=10)
+        data = r.json()
+        return data.get("store_id", APP_ID), data.get("store_name", APP_ID)
+    except Exception:
+        return APP_ID, APP_ID
 
 
 # ── startup registration ─────────────────────────────────────────────────────
@@ -392,7 +413,9 @@ def run_checks():
 
 
 def main():
+    global STORE_ID, STORE_NAME
     _add_to_startup()
+    STORE_ID, STORE_NAME = _fetch_store_config()
     while True:
         try:
             if _poll():
