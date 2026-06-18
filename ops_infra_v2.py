@@ -111,7 +111,9 @@ CAMERA_ENDPOINT = ("/v3/edgeapp/getAllCameraStreamData"
                    "?storeId={store_id}&date={date}"
                    "&searchValue=&filterByStatus=&filterByProduct=&filterByZone=")
 
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT    = 30
+APP_EXE            = "TangoEyeStreamer.exe"
+STREAM_FOLDER_ROOT = r"C:\ProgramData\Tango_IT\Tango_Eye_Streamer"
 
 
 def _auth_header():
@@ -161,11 +163,13 @@ def _normalize_camera(c):
     is_up        = up not in (False, 0, "0", "false", "False", "DOWN", "down")
     client_id    = _pick(c, "clientId", "client_id", "brandId", "brand_id")
     stream_name  = _pick(c, "streamName", "stream_name", default="")
+    stream_id    = _pick(c, "streamId", "stream_id", "streamName", "stream_name", default="")
     return {
         "ip": ip, "username": username, "password": password, "rtsp": rtsp,
         "camera_number": str(number), "manufacturer": manufacturer,
         "active": is_active, "is_up": is_up, "client_id": client_id,
         "stream_name": str(stream_name),
+        "stream_id": str(stream_id),
     }
 
 
@@ -632,20 +636,149 @@ $list | ConvertTo-Json -Compress
     return products
 
 
-def run_complete_monitoring(store_id, cameras):
-    internet       = check_internet()
-    network        = get_network_info()
-    system         = check_system()
-    antivirus      = check_antivirus()
-    antivirus_list = get_antivirus_details()
-    wifi_changes   = get_wifi_change_logs(24)
-    sleep_logs     = get_sleep_wake_logs(24)
+def _check_process(exe_name):
+    for proc in psutil.process_iter(['name', 'pid', 'status', 'create_time']):
+        try:
+            if proc.info['name'].lower() == exe_name.lower():
+                started  = datetime.datetime.fromtimestamp(proc.info['create_time']).isoformat()
+                uptime_h = round((time.time() - proc.info['create_time']) / 3600, 1)
+                return {'running': True, 'pid': proc.info['pid'],
+                        'status': proc.info['status'],
+                        'started_at': started, 'uptime_hours': uptime_h}
+        except Exception:
+            pass
+    return {'running': False, 'pid': None, 'status': 'not found',
+            'started_at': None, 'uptime_hours': None}
 
-    if cameras:
-        with ThreadPoolExecutor(max_workers=min(8, len(cameras))) as ex:
-            camera_results = list(ex.map(check_camera, cameras))
-    else:
-        camera_results = []
+
+def _get_crash_events(exe_name, days=2):
+    if platform.system() != "Windows":
+        return []
+    app = exe_name.replace(".exe", "")
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue'\n"
+        f"$start=(Get-Date).AddDays(-{days})\n"
+        "$ev=Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000,1001,1002;StartTime=$start}"
+        " -ErrorAction SilentlyContinue\n"
+        f"$filt=$ev|Where-Object{{$_.Message -like '*{app}*'}}\n"
+        "$list=foreach($e in $filt){"
+        "[PSCustomObject]@{time=$e.TimeCreated.ToString('o');id=$e.Id;level=$e.LevelDisplayName;"
+        "msg=(($e.Message -split \"`r?`n\"|Where-Object{$_.Trim()}|Select-Object -First 3)-join' | ')}}\n"
+        "$list|ConvertTo-Json -Compress"
+    )
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=15, creationflags=_NO_WIN)
+        data = json.loads((r.stdout or "").strip())
+        if isinstance(data, dict):
+            data = [data]
+        events = [{"time": d.get("time", ""), "id": str(d.get("id", "")),
+                   "level": d.get("level", ""), "msg": (d.get("msg") or "").strip()}
+                  for d in data]
+        events.sort(key=lambda e: e["time"], reverse=True)
+        return events
+    except Exception:
+        return []
+
+
+def _check_stream_folders(cameras):
+    results = []
+    seen    = set()
+    cutoff  = time.time() - 3600
+
+    for cam in cameras:
+        sid = (cam.get("stream_id") or cam.get("stream_name") or "").strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+
+        folder        = os.path.join(STREAM_FOLDER_ROOT, sid)
+        folder_exists = os.path.isdir(folder)
+        last_modified = None
+        recent        = 0
+        total         = 0
+
+        if folder_exists:
+            try:
+                last_modified = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(folder)).isoformat()
+            except Exception:
+                pass
+            try:
+                for fn in os.listdir(folder):
+                    if fn.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp')):
+                        total += 1
+                        try:
+                            if os.path.getmtime(os.path.join(folder, fn)) > cutoff:
+                                recent += 1
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        if recent > 0:
+            status = "active"
+        elif folder_exists and total > 0:
+            status = "stale"
+        elif folder_exists:
+            status = "empty"
+        else:
+            status = "missing"
+
+        results.append({
+            "stream_id":        sid,
+            "camera_number":    cam.get("camera_number", "—"),
+            "ip":               cam.get("ip", "—"),
+            "folder_exists":    folder_exists,
+            "last_modified":    last_modified,
+            "recent_images_1h": recent,
+            "total_images":     total,
+            "status":           status,
+        })
+    return results
+
+
+def check_app_status(cameras):
+    process        = _check_process(APP_EXE)
+    crashes        = _get_crash_events(APP_EXE, days=2)
+    stream_folders = _check_stream_folders(cameras)
+    return {
+        "app_exe":        APP_EXE,
+        "process":        process,
+        "crashes":        crashes,
+        "stream_folders": stream_folders,
+        "summary": {
+            "process_running": process.get("running", False),
+            "crash_count_2d":  len(crashes),
+            "streams_total":   len(stream_folders),
+            "streams_active":  sum(1 for s in stream_folders if s["status"] == "active"),
+            "streams_stale":   sum(1 for s in stream_folders if s["status"] == "stale"),
+            "streams_missing": sum(1 for s in stream_folders if s["status"] == "missing"),
+        },
+    }
+
+
+def run_complete_monitoring(store_id, cameras):
+    with ThreadPoolExecutor(max_workers=max(12, len(cameras) + 8)) as ex:
+        cam_futures  = [ex.submit(check_camera, c) for c in cameras]
+        f_internet   = ex.submit(check_internet)
+        f_network    = ex.submit(get_network_info)
+        f_system     = ex.submit(check_system)
+        f_antivirus  = ex.submit(check_antivirus)
+        f_av_list    = ex.submit(get_antivirus_details)
+        f_wifi       = ex.submit(get_wifi_change_logs, 24)
+        f_sleep      = ex.submit(get_sleep_wake_logs, 24)
+        f_app        = ex.submit(check_app_status, cameras)
+
+        camera_results = [f.result() for f in cam_futures]
+        internet       = f_internet.result()
+        network        = f_network.result()
+        system         = f_system.result()
+        antivirus      = f_antivirus.result()
+        antivirus_list = f_av_list.result()
+        wifi_changes   = f_wifi.result()
+        sleep_logs     = f_sleep.result()
+        app_status     = f_app.result()
 
     return {
         "store_id":       store_id,
@@ -658,6 +791,7 @@ def run_complete_monitoring(store_id, cameras):
         "wifi_changes":   wifi_changes,
         "sleep_logs":     sleep_logs,
         "cameras":        camera_results,
+        "app_status":     app_status,
         "summary": {
             "total_cameras":   len(camera_results),
             "cameras_passing": sum(1 for c in camera_results if c["ping"] == "OK"),
@@ -1138,6 +1272,10 @@ class OPSInfraApp:
         av_tab = tk.Frame(nb, bg=COL_CARD)
         nb.add(av_tab, text="Antivirus")
         self._build_av_table(av_tab)
+
+        app_tab = tk.Frame(nb, bg=COL_CARD)
+        nb.add(app_tab, text="App Status")
+        self._build_appstatus_tab(app_tab)
 
     # ------------------------------------------------------------------
     # TAB 0: Camera Status — ping only + offline reason
@@ -1753,6 +1891,83 @@ class OPSInfraApp:
         })
 
     # ------------------------------------------------------------------
+    def _build_appstatus_tab(self, parent):
+        STREAM_STATUS_TEXT = {"active":"● Active","stale":"◑ Stale","empty":"○ Empty","missing":"✕ Missing"}
+        STREAM_STATUS_TAG  = {"active":"ok","stale":"warn","empty":"warn","missing":"bad"}
+        self._appstatus_stream_text = STREAM_STATUS_TEXT
+        self._appstatus_stream_tag  = STREAM_STATUS_TAG
+
+        # process strip
+        proc_frame = tk.Frame(parent, bg="#f1f5f9", pady=self._s(8))
+        proc_frame.pack(fill="x", padx=self._s(10), pady=(self._s(8), 0))
+        self.app_proc_labels = {}
+        for i, (key, caption) in enumerate([("app","APPLICATION"),("proc_status","PROCESS"),
+                                             ("pid","PID"),("uptime","UPTIME"),("crashes","CRASHES (2d)")]):
+            col = tk.Frame(proc_frame, bg="#f1f5f9")
+            col.grid(row=0, column=i, padx=self._s(14), sticky="w")
+            tk.Label(col, text=caption, bg="#f1f5f9", fg=COL_MUTED,
+                     font=("Segoe UI", self._f(7), "bold")).pack(anchor="w")
+            v = tk.Label(col, text="—", bg="#f1f5f9", fg=COL_TEXT,
+                         font=("Segoe UI", self._f(11), "bold"))
+            v.pack(anchor="w")
+            self.app_proc_labels[key] = v
+
+        # crash events
+        tk.Label(parent, text="Crash Events  (last 2 days)", bg=COL_CARD,
+                 fg=COL_TEXT, font=("Segoe UI", self._f(9), "bold")).pack(
+                 anchor="w", padx=self._s(10), pady=(self._s(8), 0))
+        crash_frame = tk.Frame(parent, bg=COL_CARD, height=self._s(120))
+        crash_frame.pack(fill="x", padx=self._s(10)); crash_frame.pack_propagate(False)
+        crash_cols = ("time","evid","level","msg")
+        wrap1 = tk.Frame(crash_frame, bg=COL_CARD); wrap1.pack(fill="both", expand=True)
+        sb1   = ttk.Scrollbar(wrap1, orient="vertical")
+        sb1.pack(side="right", fill="y")
+        self.crash_tree = ttk.Treeview(wrap1, columns=crash_cols, show="headings",
+                                        yscrollcommand=sb1.set)
+        sb1.config(command=self.crash_tree.yview)
+        self.crash_tree.pack(fill="both", expand=True)
+        for c, h, w, a in zip(crash_cols, ("Time","Event ID","Level","Message"),
+                               (self._s(155),self._s(80),self._s(80),self._s(500)),
+                               ("w","center","center","w")):
+            self.crash_tree.heading(c, text=h, anchor=a)
+            self.crash_tree.column(c, width=w, anchor=a, stretch=True, minwidth=40)
+        self.crash_tree.tag_configure("ok",  background="#f0fdf4", foreground="#15803d")
+        self.crash_tree.tag_configure("warn",background="#fffbeb", foreground="#92400e")
+        self.crash_tree.tag_configure("bad", background="#fef2f2", foreground="#b91c1c")
+        self.crash_tree.insert("","end",values=("","","","Run monitoring to load crash events"))
+        self._bind_col_resize(self.crash_tree,{"time":0.18,"evid":0.09,"level":0.09,"msg":0.64})
+
+        # stream folders
+        tk.Label(parent, text="Stream Folder Status  (images checked last 1h)",
+                 bg=COL_CARD, fg=COL_TEXT,
+                 font=("Segoe UI", self._f(9), "bold")).pack(
+                 anchor="w", padx=self._s(10), pady=(self._s(6), 0))
+        sf_frame = tk.Frame(parent, bg=COL_CARD)
+        sf_frame.pack(fill="both", expand=True, padx=self._s(10), pady=(0, self._s(8)))
+        sf_cols = ("stream_id","camera","ip","status","last_modified","recent","total")
+        wrap2 = tk.Frame(sf_frame, bg=COL_CARD); wrap2.pack(fill="both", expand=True)
+        sb2   = ttk.Scrollbar(wrap2, orient="vertical")
+        sb2.pack(side="right", fill="y")
+        self.sf_tree = ttk.Treeview(wrap2, columns=sf_cols, show="headings",
+                                     yscrollcommand=sb2.set)
+        sb2.config(command=self.sf_tree.yview)
+        self.sf_tree.pack(fill="both", expand=True)
+        for c, h, w, a in zip(sf_cols,
+                               ("Stream ID","Camera","IP","Status","Last Modified","1h Images","Total"),
+                               (self._s(140),self._s(80),self._s(120),self._s(100),
+                                self._s(160),self._s(80),self._s(70)),
+                               ("w","w","w","w","w","center","center")):
+            self.sf_tree.heading(c, text=h, anchor=a)
+            self.sf_tree.column(c, width=w, anchor=a, stretch=True, minwidth=40)
+        self.sf_tree.tag_configure("ok",  background="#f0fdf4", foreground="#15803d")
+        self.sf_tree.tag_configure("warn",background="#fffbeb", foreground="#92400e")
+        self.sf_tree.tag_configure("bad", background="#fef2f2", foreground="#b91c1c")
+        self.sf_tree.insert("","end",values=("","","","","Run monitoring to load stream status","",""))
+        self._bind_col_resize(self.sf_tree,
+                              {"stream_id":0.16,"camera":0.09,"ip":0.13,"status":0.11,
+                               "last_modified":0.20,"recent":0.10,"total":0.08})
+
+    # ------------------------------------------------------------------
     def _build_footer(self, parent):
         bar = tk.Frame(parent, bg=COL_BG)
         bar.pack(fill="x", pady=(self._s(12), 0))
@@ -1950,9 +2165,57 @@ class OPSInfraApp:
                                 values=(fallback or "No antivirus product detected", "", "", ""))
         self.notebook.tab(5, text=f"Antivirus ({len(av_list)})")
 
+        # Tab 6: App Status
+        app_st   = results.get("app_status", {})
+        process  = app_st.get("process", {})
+        crashes  = app_st.get("crashes", [])
+        streams  = app_st.get("stream_folders", [])
+        app_summ = app_st.get("summary", {})
+
+        proc_run  = process.get("running", False)
+        crash_cnt = app_summ.get("crash_count_2d", 0)
+        streams_t = app_summ.get("streams_total", 0)
+        streams_a = app_summ.get("streams_active", 0)
+
+        self.app_proc_labels["app"].config(text=app_st.get("app_exe", "TangoEyeStreamer.exe"))
+        self.app_proc_labels["proc_status"].config(
+            text="● Running" if proc_run else "○ Not Running",
+            fg=COL_GREEN if proc_run else COL_RED)
+        self.app_proc_labels["pid"].config(text=str(process.get("pid") or "—"))
+        uptime = process.get("uptime_hours")
+        self.app_proc_labels["uptime"].config(text=f"{uptime} h" if uptime is not None else "—")
+        self.app_proc_labels["crashes"].config(
+            text=str(crash_cnt), fg=COL_RED if crash_cnt > 0 else COL_GREEN)
+
+        self.crash_tree.delete(*self.crash_tree.get_children())
+        if crashes:
+            for c in crashes:
+                t   = (c.get("time","") or "")[:19].replace("T"," ")
+                lvl = c.get("level","")
+                tag = "bad" if "error" in lvl.lower() else "warn"
+                self.crash_tree.insert("","end",tags=(tag,),
+                                       values=(t, c.get("id",""), lvl, c.get("msg","")[:120]))
+        else:
+            self.crash_tree.insert("","end",values=("","","","No crash events in the last 2 days"))
+
+        self.sf_tree.delete(*self.sf_tree.get_children())
+        if streams:
+            for s in streams:
+                lm  = (s.get("last_modified","") or "")[:19].replace("T"," ")
+                tag = self._appstatus_stream_tag.get(s.get("status",""), "warn")
+                st  = self._appstatus_stream_text.get(s.get("status",""), s.get("status",""))
+                self.sf_tree.insert("","end",tags=(tag,), values=(
+                    s.get("stream_id","—"), s.get("camera_number","—"), s.get("ip","—"),
+                    st, lm or "—", s.get("recent_images_1h",0), s.get("total_images",0)))
+        else:
+            self.sf_tree.insert("","end",values=("","","","No stream folders found","","",""))
+        self.notebook.tab(6, text=f"App Status ({streams_t} streams)")
+
         # Footer
-        if total and inet.get("connected") and ping_ok == total and rtsp_ok == total:
+        if total and inet.get("connected") and ping_ok == total and rtsp_ok == total and proc_run:
             self.status_label.config(text="● All systems healthy",   fg=COL_GREEN)
+        elif not proc_run:
+            self.status_label.config(text="● App process not running", fg=COL_RED)
         elif total and ping_ok == 0:
             self.status_label.config(text="● Cameras unreachable",   fg=COL_RED)
         else:
