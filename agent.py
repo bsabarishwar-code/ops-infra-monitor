@@ -151,28 +151,28 @@ def fetch_cameras():
 # ── health checks ─────────────────────────────────────────────────────────────
 def check_internet():
     results = []
-    for _ in range(3):
+    for _ in range(2):
         ok, lat = False, None
         if ping3:
             try:
-                r = ping3.ping("8.8.8.8", timeout=3)
+                r = ping3.ping("8.8.8.8", timeout=2)
                 if r:
                     ok, lat = True, round(r * 1000, 2)
             except Exception:
                 pass
-        else:
+        if not ok:
             try:
                 t = time.perf_counter()
-                with socket.create_connection(("8.8.8.8", 53), timeout=3):
+                with socket.create_connection(("8.8.8.8", 53), timeout=2):
                     ok, lat = True, round((time.perf_counter() - t) * 1000, 2)
             except Exception:
                 pass
         results.append({"success": ok, "latency": lat})
-        time.sleep(0.5)
+        time.sleep(0.2)
     succ = sum(1 for r in results if r["success"])
     lats = [r["latency"] for r in results if r["latency"] is not None]
-    return {"connected": succ >= 2,
-            "packet_loss": round((3 - succ) * 100 / 3, 1),
+    return {"connected": succ >= 1,
+            "packet_loss": round((2 - succ) * 100 / 2, 1),
             "avg_latency_ms": round(sum(lats) / len(lats), 2) if lats else None}
 
 def check_system():
@@ -249,7 +249,7 @@ def _ps_events(ps_script, hours, mapping):
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
                             ps_script.replace("HOURS", str(int(hours)))],
-                           capture_output=True, text=True, timeout=40, creationflags=_NO_WIN)
+                           capture_output=True, text=True, timeout=15, creationflags=_NO_WIN)
         data = json.loads((r.stdout or "").strip())
         if isinstance(data, dict):
             data = [data]
@@ -314,7 +314,7 @@ def _diagnose(ip):
             continue
     return "All TCP ports timed out — camera offline or firewalled"
 
-def _rtsp_check(url, timeout=5):
+def _rtsp_check(url, timeout=3):
     import re
     m = re.match(r"rtsp://(?:[^@/]+@)?([^:/]+)(?::(\d+))?", url)
     if not m:
@@ -423,7 +423,7 @@ def _get_crash_events(exe_name, days=2):
     )
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                           capture_output=True, text=True, timeout=30, creationflags=_NO_WIN)
+                           capture_output=True, text=True, timeout=15, creationflags=_NO_WIN)
         data = json.loads((r.stdout or "").strip())
         if isinstance(data, dict):
             data = [data]
@@ -517,22 +517,43 @@ def check_app_status(cameras):
 # ── main run ──────────────────────────────────────────────────────────────────
 def run_checks():
     cams = fetch_cameras()
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(cams)))) as ex:
-        cam_results = list(ex.map(check_camera, cams)) if cams else []
+
+    with ThreadPoolExecutor(max_workers=max(12, len(cams) + 8)) as ex:
+        # Camera checks + all system checks run fully in parallel
+        cam_futures  = [ex.submit(check_camera, c) for c in cams]
+        f_internet   = ex.submit(check_internet)
+        f_network    = ex.submit(get_network_info)
+        f_system     = ex.submit(check_system)
+        f_antivirus  = ex.submit(check_antivirus)
+        f_av_list    = ex.submit(get_antivirus_details)
+        f_wifi       = ex.submit(get_wifi_change_logs, 24)
+        f_sleep      = ex.submit(get_sleep_wake_logs, 24)
+        f_app        = ex.submit(check_app_status, cams)
+
+        cam_results  = [f.result() for f in cam_futures]
+        internet     = f_internet.result()
+        network      = f_network.result()
+        system       = f_system.result()
+        antivirus    = f_antivirus.result()
+        av_list      = f_av_list.result()
+        wifi         = f_wifi.result()
+        sleep_logs   = f_sleep.result()
+        app_status   = f_app.result()
+
     return {
         "app_id":         APP_ID,
         "store_id":       STORE_ID,
         "store_name":     STORE_NAME,
         "timestamp":      datetime.datetime.now().isoformat(),
-        "internet":       check_internet(),
-        "network":        get_network_info(),
-        "system":         check_system(),
-        "antivirus":      check_antivirus(),
-        "antivirus_list": get_antivirus_details(),
-        "wifi_changes":   get_wifi_change_logs(24),
-        "sleep_logs":     get_sleep_wake_logs(24),
+        "internet":       internet,
+        "network":        network,
+        "system":         system,
+        "antivirus":      antivirus,
+        "antivirus_list": av_list,
+        "wifi_changes":   wifi,
+        "sleep_logs":     sleep_logs,
         "cameras":        cam_results,
-        "app_status":     check_app_status(cams),
+        "app_status":     app_status,
         "summary": {
             "total_cameras":   len(cam_results),
             "cameras_passing": sum(1 for c in cam_results if c["ping"] == "OK"),
