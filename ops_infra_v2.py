@@ -2207,109 +2207,166 @@ class OPSInfraApp:
     # TAB 8: OpenSearch Logs — edgeapp_systemlogs* + diagnostic_check_results
     # ------------------------------------------------------------------
     def _build_opensearch_tab(self, parent):
-        # ── control bar ──────────────────────────────────────────────────
+        # ── global control bar ───────────────────────────────────────────
         ctrl_card = tk.Frame(parent, bg=COL_CARD,
                              highlightbackground=COL_BORDER, highlightthickness=1)
         ctrl_card.pack(fill="x", padx=self._s(14), pady=(self._s(14), self._s(6)))
         ctrl = tk.Frame(ctrl_card, bg=COL_CARD)
         ctrl.pack(fill="x", padx=self._s(14), pady=self._s(10))
-
-        tk.Label(ctrl, text="OpenSearch Logs  (last 24 h)",
-                 bg=COL_CARD, fg=COL_TEXT,
+        tk.Label(ctrl, text="OpenSearch Logs  (last 24 h)", bg=COL_CARD, fg=COL_TEXT,
                  font=("Segoe UI", self._f(11), "bold")).pack(side="left")
-
         self._os_status = tk.Label(
             ctrl, text="Enter a Store ID and click Run Monitoring or Refresh",
             bg=COL_CARD, fg=COL_MUTED, font=("Segoe UI", 9))
         self._os_status.pack(side="left", padx=self._s(14))
-
         self._os_refresh_btn = tk.Button(
-            ctrl, text="↺  Refresh",
-            font=("Segoe UI", self._f(10), "bold"),
+            ctrl, text="↺  Refresh", font=("Segoe UI", self._f(10), "bold"),
             bg=COL_ACCENT, fg="white", activebackground="#1d4ed8",
             activeforeground="white", relief="flat", bd=0,
             padx=self._s(14), pady=self._s(5), cursor="hand2",
             command=self._refresh_opensearch_logs)
         self._os_refresh_btn.pack(side="right")
 
-        # ── sub-notebook ─────────────────────────────────────────────────
-        os_nb = ttk.Notebook(parent)
-        os_nb.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
-        self._os_nb = os_nb
+        # ── per-panel state ───────────────────────────────────────────────
+        self._os_state = {
+            "sys":  {"hits": [], "err": None, "asc": False,
+                     "sv": tk.StringVar(), "cnt_lbl": None},
+            "diag": {"hits": [], "err": None, "asc": False,
+                     "sv": tk.StringVar(), "cnt_lbl": None},
+        }
 
-        sys_frame = tk.Frame(os_nb, bg=COL_CARD)
-        os_nb.add(sys_frame, text="EdgeApp System Logs")
-        self.os_syslogs_txt = self._build_os_discover_panel(sys_frame)
+        # ── resizable PanedWindow (drag the sash between the two panels) ──
+        paned = ttk.PanedWindow(parent, orient="vertical")
+        paned.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
 
-        diag_frame = tk.Frame(os_nb, bg=COL_CARD)
-        os_nb.add(diag_frame, text="Diagnostic Check")
-        self.os_diag_txt = self._build_os_discover_panel(diag_frame)
+        sys_frm = tk.Frame(paned, bg=COL_CARD)
+        paned.add(sys_frm, weight=1)
+        self.os_syslogs_txt = self._build_os_panel(
+            sys_frm, "EdgeApp System Logs  (edgeapp_systemlogs*)", "sys")
+
+        diag_frm = tk.Frame(paned, bg=COL_CARD)
+        paned.add(diag_frm, weight=1)
+        self.os_diag_txt = self._build_os_panel(
+            diag_frm, "Diagnostic Check  (diagnostic_check_results)", "diag")
 
     # ------------------------------------------------------------------
-    def _build_os_discover_panel(self, parent):
-        """Build an OpenSearch Discover-style panel: Time column + field-chip _source."""
-        TS_PX = self._s(178)   # pixel width of the timestamp column
+    def _build_os_panel(self, parent, title, key):
+        """One OpenSearch panel: dark title bar + search/sort + Discover text view."""
+        TS_PX = self._s(180)
+        state = self._os_state[key]
 
-        # Column header row (mimics OpenSearch Discover header)
+        # Dark title bar (mimics OpenSearch header)
+        tbar = tk.Frame(parent, bg=COL_HEADER)
+        tbar.pack(fill="x")
+        tk.Label(tbar, text=title, bg=COL_HEADER, fg="white",
+                 font=("Segoe UI", self._f(10), "bold")).pack(
+                 side="left", padx=self._s(12), pady=self._s(6))
+        state["cnt_lbl"] = tk.Label(tbar, text="", bg=COL_HEADER, fg="#9ca3af",
+                                     font=("Segoe UI", 9))
+        state["cnt_lbl"].pack(side="left")
+
+        # Sort toggle
+        state["sort_sv"] = tk.StringVar(value="↓ Newest First")
+        def _toggle(k=key):
+            s = self._os_state[k]
+            s["asc"] = not s["asc"]
+            s["sort_sv"].set("↑ Oldest First" if s["asc"] else "↓ Newest First")
+            self._rerender_os_panel(k)
+        tk.Button(tbar, textvariable=state["sort_sv"],
+                  font=("Segoe UI", self._f(9)), bg="#374151", fg="white",
+                  activebackground="#4b5563", activeforeground="white",
+                  relief="flat", bd=0, padx=self._s(10), pady=self._s(2),
+                  cursor="hand2", command=_toggle).pack(
+                  side="right", padx=self._s(8), pady=self._s(4))
+
+        # Search bar
+        sbar = tk.Frame(parent, bg="#f1f5f9",
+                        highlightbackground=COL_BORDER, highlightthickness=1)
+        sbar.pack(fill="x")
+        tk.Label(sbar, text=" 🔍", bg="#f1f5f9", fg=COL_MUTED,
+                 font=("Segoe UI", self._f(10))).pack(side="left", padx=(self._s(4), 0))
+        hint = tk.Label(sbar, text="  Filter logs by any field value…",
+                        bg="#f1f5f9", fg="#9ca3af", font=("Segoe UI", 9, "italic"))
+        hint.pack(side="left")
+        search_e = tk.Entry(sbar, textvariable=state["sv"],
+                            font=("Segoe UI", self._f(10)), bg="#f1f5f9",
+                            fg=COL_TEXT, relief="flat", insertbackground=COL_TEXT, bd=0)
+        search_e.pack(side="left", fill="x", expand=True, pady=self._s(5))
+        clear_btn = tk.Button(sbar, text="✕", font=("Segoe UI", 9), bg="#f1f5f9",
+                              fg=COL_MUTED, relief="flat", bd=0, cursor="hand2",
+                              command=lambda: state["sv"].set(""))
+        clear_btn.pack(side="right", padx=self._s(6))
+
+        def _on_sv(*_):
+            if state["sv"].get():
+                hint.pack_forget()
+                clear_btn.pack(side="right", padx=self._s(6))
+            else:
+                hint.pack(side="left")
+                clear_btn.pack_forget()
+            self._rerender_os_panel(key)
+        state["sv"].trace_add("write", _on_sv)
+        search_e.bind("<FocusIn>",  lambda _: hint.pack_forget() if not state["sv"].get() else None)
+        search_e.bind("<FocusOut>", lambda _: (hint.pack(side="left") if not state["sv"].get() else None))
+
+        # Column header row
         hdr = tk.Frame(parent, bg="#eef2f7",
                        highlightbackground=COL_BORDER, highlightthickness=1)
-        hdr.pack(fill="x", padx=self._s(6), pady=(self._s(6), 0))
+        hdr.pack(fill="x")
         tk.Label(hdr, text="  Time", bg="#eef2f7", fg=COL_MUTED,
                  font=("Segoe UI", self._f(9), "bold"),
-                 width=22, anchor="w").pack(side="left", pady=self._s(5))
-        tk.Frame(hdr, bg=COL_BORDER, width=1).pack(side="left", fill="y",
-                                                    pady=self._s(3), padx=(0, self._s(4)))
+                 width=22, anchor="w").pack(side="left", pady=self._s(4))
+        tk.Frame(hdr, bg=COL_BORDER, width=1).pack(
+            side="left", fill="y", pady=self._s(2), padx=(0, self._s(4)))
         tk.Label(hdr, text="_source", bg="#eef2f7", fg=COL_MUTED,
-                 font=("Segoe UI", self._f(9), "bold")).pack(side="left", pady=self._s(5))
+                 font=("Segoe UI", self._f(9), "bold")).pack(side="left", pady=self._s(4))
 
-        # Text widget + vertical scrollbar
+        # Text widget + both scrollbars
         frame = tk.Frame(parent, bg=COL_CARD,
                          highlightbackground=COL_BORDER, highlightthickness=1)
-        frame.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
+        frame.pack(fill="both", expand=True)
         vsb = ttk.Scrollbar(frame, orient="vertical")
         vsb.pack(side="right", fill="y")
+        hsb = ttk.Scrollbar(frame, orient="horizontal")
+        hsb.pack(side="bottom", fill="x")
 
         txt = tk.Text(
-            frame, wrap="word", bg=COL_CARD, fg=COL_TEXT,
+            frame, wrap="none", bg=COL_CARD, fg=COL_TEXT,
             font=("Segoe UI", self._f(10)),
-            yscrollcommand=vsb.set,
+            yscrollcommand=vsb.set, xscrollcommand=hsb.set,
             relief="flat", bd=0, cursor="arrow",
             state="disabled",
-            spacing1=self._s(5), spacing3=self._s(5),
+            spacing1=self._s(6), spacing3=self._s(6),
             tabs=(TS_PX,),
         )
         vsb.config(command=txt.yview)
+        hsb.config(command=txt.xview)
         txt.pack(fill="both", expand=True)
 
-        # ── tag styles ────────────────────────────────────────────────────
-        txt.tag_config("ts",
-                       foreground="#2563eb",
-                       font=("Segoe UI", self._f(9)),
-                       lmargin1=self._s(8),
-                       lmargin2=TS_PX + self._s(6))
-        # gray chip: field key
-        txt.tag_config("fk",
-                       background="#e5e7eb",
-                       foreground="#374151",
-                       font=("Segoe UI", self._f(9), "bold"),
-                       lmargin2=TS_PX + self._s(6))
-        # normal field value
-        txt.tag_config("fv",
-                       foreground=COL_TEXT,
-                       font=("Segoe UI", self._f(10)),
-                       lmargin2=TS_PX + self._s(6))
-        # highlighted value (storeId → yellow background like OpenSearch)
-        txt.tag_config("fv_hl",
-                       background="#fef08a",
-                       foreground="#1f2937",
-                       font=("Segoe UI", self._f(10), "bold"),
-                       lmargin2=TS_PX + self._s(6))
-        # thin separator line between rows
-        txt.tag_config("sep",
-                       foreground="#e2e8f0",
-                       font=("Segoe UI", 2))
+        # Tag creation order matters: later = higher priority.
+        # Row-bg tags first (lower priority) → chip tags override them.
+        txt.tag_config("odd",      background="#f0f4f8")
+        txt.tag_config("even",     background=COL_CARD)
+        txt.tag_config("ts",       foreground="#2563eb",
+                       font=("Segoe UI", self._f(9)), lmargin1=self._s(8))
+        txt.tag_config("fk",       background="#dde1e7", foreground="#374151",
+                       font=("Segoe UI", self._f(9), "bold"))
+        txt.tag_config("fv",       foreground=COL_TEXT, font=("Segoe UI", self._f(10)))
+        txt.tag_config("fv_hl",    background="#fef08a", foreground="#1f2937",
+                       font=("Segoe UI", self._f(10), "bold"))
+        txt.tag_config("match_hl", background="#f97316", foreground="white",
+                       font=("Segoe UI", self._f(10), "bold"))
 
         return txt
+
+    # ------------------------------------------------------------------
+    def _rerender_os_panel(self, key):
+        txt   = self.os_syslogs_txt if key == "sys" else self.os_diag_txt
+        state = self._os_state[key]
+        self._fill_os_discover(txt, state["hits"], state["err"],
+                               search=state["sv"].get(),
+                               ascending=state["asc"],
+                               cnt_lbl=state["cnt_lbl"])
 
     # ------------------------------------------------------------------
     def _refresh_opensearch_logs(self):
@@ -2319,8 +2376,8 @@ class OPSInfraApp:
             return
         self._os_refresh_btn.config(state="disabled")
         self._os_status.config(text="Fetching…", fg=COL_AMBER)
-        self._os_txt_set(self.os_syslogs_txt, "  Fetching from OpenSearch…")
-        self._os_txt_set(self.os_diag_txt,    "  Fetching from OpenSearch…")
+        for txt in (self.os_syslogs_txt, self.os_diag_txt):
+            self._os_txt_set(txt, "  Fetching from OpenSearch…")
 
         def _worker():
             sys_hits,  sys_err  = fetch_opensearch_logs(store_id, "edgeapp_systemlogs*")
@@ -2340,7 +2397,6 @@ class OPSInfraApp:
 
     @staticmethod
     def _flatten_source(d, prefix=""):
-        """Recursively flatten a nested dict: {'data': {'msg': 'x'}} → {'data.msg': 'x'}"""
         out = {}
         for k, v in (d.items() if isinstance(d, dict) else []):
             key = f"{prefix}.{k}" if prefix else k
@@ -2353,30 +2409,28 @@ class OPSInfraApp:
     # ------------------------------------------------------------------
     def _populate_opensearch_trees(self, sys_hits, sys_err, diag_hits, diag_err):
         self._os_refresh_btn.config(state="normal")
-
-        self._fill_os_discover(self.os_syslogs_txt, sys_hits, sys_err)
-        self._fill_os_discover(self.os_diag_txt,    diag_hits, diag_err)
-
+        self._os_state["sys"]["hits"]  = sys_hits
+        self._os_state["sys"]["err"]   = sys_err
+        self._os_state["diag"]["hits"] = diag_hits
+        self._os_state["diag"]["err"]  = diag_err
+        self._rerender_os_panel("sys")
+        self._rerender_os_panel("diag")
         total  = len(sys_hits) + len(diag_hits)
         errors = [e for e in (sys_err, diag_err) if e]
         if errors:
             self._os_status.config(text=f"Error: {errors[0]}", fg=COL_RED)
         else:
             self._os_status.config(
-                text=(f"Loaded {len(sys_hits)} system logs · "
-                      f"{len(diag_hits)} diagnostic results"),
+                text=f"Loaded {len(sys_hits)} system logs · {len(diag_hits)} diagnostic results",
                 fg=COL_GREEN)
         self.notebook.tab(8, text=f"OpenSearch Logs ({total})")
 
     # ------------------------------------------------------------------
-    def _fill_os_discover(self, txt, hits, error):
-        """Render OpenSearch hits into a Text widget as Discover-style field chips."""
-        # Fields shown first (in this order), matching the OpenSearch Discover screenshot
-        PRIORITY = [
-            "storeId", "clientId", "store_date", "log_code",
-            "log_type", "log_subtype", "data.message",
-            "data.occuringDate", "data.occuringTime", "timestamp",
-        ]
+    def _fill_os_discover(self, txt, hits, error, search="", ascending=False, cnt_lbl=None):
+        """Render hits as OpenSearch-Discover field chips with search + sort + alternating rows."""
+        PRIORITY = ["storeId", "clientId", "store_date", "log_code",
+                    "log_type", "log_subtype", "data.message",
+                    "data.occuringDate", "data.occuringTime"]
         SKIP = {"_id", "_type", "_index", "_score", "timestamp", "@timestamp"}
 
         txt.config(state="normal")
@@ -2385,39 +2439,67 @@ class OPSInfraApp:
         if error:
             txt.insert("end", f"\n  ⚠  {error}\n", "ts")
             txt.config(state="disabled")
+            if cnt_lbl: cnt_lbl.config(text="Error")
             return
-        if not hits:
-            txt.insert("end", "\n  No results found for this store in the last 24 h.\n", "ts")
+
+        # Sort
+        result = list(reversed(hits)) if ascending else list(hits)
+
+        # Filter by search term across all flattened field values
+        term = search.strip().lower()
+        if term:
+            result = [h for h in result
+                      if any(term in str(v).lower()
+                             for v in self._flatten_source(h.get("_source", {})).values())]
+
+        n = len(result)
+        if cnt_lbl:
+            cnt_lbl.config(text=f"  {n:,} result{'s' if n != 1 else ''}"
+                               + (f"  (filtered from {len(hits):,})" if term and n != len(hits) else ""))
+
+        if not result:
+            msg = (f"  No results matching '{search}'.\n" if term
+                   else "  No results found for this store in the last 24 h.\n")
+            txt.insert("end", msg, "ts")
             txt.config(state="disabled")
             return
 
-        for i, hit in enumerate(hits):
+        for i, hit in enumerate(result):
             src  = hit.get("_source", {})
             flat = self._flatten_source(src)
+            ts   = _fmt_os_ts(flat.get("timestamp") or flat.get("@timestamp") or "")
+            rtag = "odd" if i % 2 else "even"
 
-            ts = _fmt_os_ts(flat.get("timestamp") or flat.get("@timestamp") or "")
+            line_start = txt.index("end")
 
-            # Thin separator between rows (skip before first row)
-            if i > 0:
-                txt.insert("end", "─" * 180 + "\n", "sep")
-
-            # Timestamp in the left "column" (tab-aligned)
+            # Timestamp (tab-stop aligns to _source column)
             txt.insert("end", f"  {ts}\t", "ts")
 
-            # Priority fields first, then remaining (skip internal ES fields)
+            # Priority fields first, then remainder
             ordered = [(k, flat[k]) for k in PRIORITY if k in flat and k not in SKIP]
-            ordered += [
-                (k, v) for k, v in flat.items()
-                if k not in PRIORITY and k not in SKIP
-            ]
+            ordered += [(k, v) for k, v in flat.items()
+                        if k not in PRIORITY and k not in SKIP]
 
             for k, v in ordered:
-                val_str = str(v)
                 txt.insert("end", f" {k}: ", "fk")
-                tag = "fv_hl" if k == "storeId" else "fv"
-                txt.insert("end", val_str + " ", tag)
+                ftag = "fv_hl" if k == "storeId" else "fv"
+                txt.insert("end", str(v) + "  ", ftag)
 
             txt.insert("end", "\n")
+
+            # Apply alternating row background over the full line
+            txt.tag_add(rtag, line_start, txt.index("end"))
+
+        # Highlight every occurrence of the search term
+        if term:
+            pos = "1.0"
+            while True:
+                pos = txt.search(term, pos, stopindex="end", nocase=True)
+                if not pos:
+                    break
+                end_pos = f"{pos}+{len(term)}c"
+                txt.tag_add("match_hl", pos, end_pos)
+                pos = end_pos
 
         txt.config(state="disabled")
 
