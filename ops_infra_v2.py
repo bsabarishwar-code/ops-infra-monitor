@@ -2251,17 +2251,18 @@ class OPSInfraApp:
 
     # ------------------------------------------------------------------
     def _build_os_panel(self, parent, title, key):
-        """One OpenSearch panel: dark title bar + search/sort + Discover text view."""
-        TS_PX = self._s(180)
+        """One OpenSearch panel: dark title bar + search/sort + card-per-document view."""
         state = self._os_state[key]
+        IL = self._s(14)   # left indent for timestamp
+        FL = self._s(28)   # left indent for fields (below timestamp)
 
-        # Dark title bar (mimics OpenSearch header)
+        # ── Dark title bar ───────────────────────────────────────────────
         tbar = tk.Frame(parent, bg=COL_HEADER)
         tbar.pack(fill="x")
         tk.Label(tbar, text=title, bg=COL_HEADER, fg="white",
                  font=("Segoe UI", self._f(10), "bold")).pack(
-                 side="left", padx=self._s(12), pady=self._s(6))
-        state["cnt_lbl"] = tk.Label(tbar, text="", bg=COL_HEADER, fg="#9ca3af",
+                 side="left", padx=self._s(14), pady=self._s(7))
+        state["cnt_lbl"] = tk.Label(tbar, text="", bg=COL_HEADER, fg="#94a3b8",
                                      font=("Segoe UI", 9))
         state["cnt_lbl"].pack(side="left")
 
@@ -2273,88 +2274,94 @@ class OPSInfraApp:
             s["sort_sv"].set("↑ Oldest First" if s["asc"] else "↓ Newest First")
             self._rerender_os_panel(k)
         tk.Button(tbar, textvariable=state["sort_sv"],
-                  font=("Segoe UI", self._f(9)), bg="#374151", fg="white",
-                  activebackground="#4b5563", activeforeground="white",
-                  relief="flat", bd=0, padx=self._s(10), pady=self._s(2),
+                  font=("Segoe UI", self._f(9)), bg="#334155", fg="#e2e8f0",
+                  activebackground="#475569", activeforeground="white",
+                  relief="flat", bd=0, padx=self._s(12), pady=self._s(4),
                   cursor="hand2", command=_toggle).pack(
-                  side="right", padx=self._s(8), pady=self._s(4))
+                  side="right", padx=self._s(10), pady=self._s(6))
 
-        # Search bar
-        sbar = tk.Frame(parent, bg="#f1f5f9",
-                        highlightbackground=COL_BORDER, highlightthickness=1)
+        # ── Search bar ───────────────────────────────────────────────────
+        sbar = tk.Frame(parent, bg="white",
+                        highlightbackground="#cbd5e1", highlightthickness=1)
         sbar.pack(fill="x")
-        tk.Label(sbar, text=" 🔍", bg="#f1f5f9", fg=COL_MUTED,
-                 font=("Segoe UI", self._f(10))).pack(side="left", padx=(self._s(4), 0))
-        hint = tk.Label(sbar, text="  Filter logs by any field value…",
-                        bg="#f1f5f9", fg="#9ca3af", font=("Segoe UI", 9, "italic"))
+        tk.Label(sbar, text="  🔍", bg="white", fg="#94a3b8",
+                 font=("Segoe UI", self._f(10))).pack(side="left")
+        hint = tk.Label(sbar, text="Filter logs by any field value…",
+                        bg="white", fg="#94a3b8", font=("Segoe UI", 9, "italic"))
         hint.pack(side="left")
         search_e = tk.Entry(sbar, textvariable=state["sv"],
-                            font=("Segoe UI", self._f(10)), bg="#f1f5f9",
-                            fg=COL_TEXT, relief="flat", insertbackground=COL_TEXT, bd=0)
-        search_e.pack(side="left", fill="x", expand=True, pady=self._s(5))
-        clear_btn = tk.Button(sbar, text="✕", font=("Segoe UI", 9), bg="#f1f5f9",
-                              fg=COL_MUTED, relief="flat", bd=0, cursor="hand2",
+                            font=("Segoe UI", self._f(10)), bg="white",
+                            fg=COL_TEXT, relief="flat", insertbackground=COL_ACCENT, bd=0)
+        search_e.pack(side="left", fill="x", expand=True, ipady=self._s(5))
+        clear_btn = tk.Button(sbar, text="  ✕  ", font=("Segoe UI", 9), bg="white",
+                              fg="#94a3b8", relief="flat", bd=0, cursor="hand2",
                               command=lambda: state["sv"].set(""))
-        clear_btn.pack(side="right", padx=self._s(6))
+        clear_btn.pack(side="right")
 
         def _on_sv(*_):
             if state["sv"].get():
                 hint.pack_forget()
-                clear_btn.pack(side="right", padx=self._s(6))
+                clear_btn.pack(side="right")
             else:
                 hint.pack(side="left")
                 clear_btn.pack_forget()
             self._rerender_os_panel(key)
         state["sv"].trace_add("write", _on_sv)
-        search_e.bind("<FocusIn>",  lambda _: hint.pack_forget() if not state["sv"].get() else None)
-        search_e.bind("<FocusOut>", lambda _: (hint.pack(side="left") if not state["sv"].get() else None))
+        search_e.bind("<FocusIn>",
+                      lambda _: hint.pack_forget() if not state["sv"].get() else None)
+        search_e.bind("<FocusOut>",
+                      lambda _: (hint.pack(side="left") if not state["sv"].get() else None))
 
-        # Column header row
-        hdr = tk.Frame(parent, bg="#eef2f7",
-                       highlightbackground=COL_BORDER, highlightthickness=1)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="  Time", bg="#eef2f7", fg=COL_MUTED,
-                 font=("Segoe UI", self._f(9), "bold"),
-                 width=22, anchor="w").pack(side="left", pady=self._s(4))
-        tk.Frame(hdr, bg=COL_BORDER, width=1).pack(
-            side="left", fill="y", pady=self._s(2), padx=(0, self._s(4)))
-        tk.Label(hdr, text="_source", bg="#eef2f7", fg=COL_MUTED,
-                 font=("Segoe UI", self._f(9), "bold")).pack(side="left", pady=self._s(4))
-
-        # Text widget + both scrollbars
-        frame = tk.Frame(parent, bg=COL_CARD,
-                         highlightbackground=COL_BORDER, highlightthickness=1)
+        # ── Text widget + vertical scrollbar ────────────────────────────
+        frame = tk.Frame(parent, bg="#f8fafc")
         frame.pack(fill="both", expand=True)
         vsb = ttk.Scrollbar(frame, orient="vertical")
         vsb.pack(side="right", fill="y")
-        hsb = ttk.Scrollbar(frame, orient="horizontal")
-        hsb.pack(side="bottom", fill="x")
 
         txt = tk.Text(
-            frame, wrap="none", bg=COL_CARD, fg=COL_TEXT,
+            frame, wrap="word", bg="#f8fafc", fg=COL_TEXT,
             font=("Segoe UI", self._f(10)),
-            yscrollcommand=vsb.set, xscrollcommand=hsb.set,
+            yscrollcommand=vsb.set,
             relief="flat", bd=0, cursor="arrow",
             state="disabled",
-            spacing1=self._s(6), spacing3=self._s(6),
-            tabs=(TS_PX,),
+            padx=self._s(4), pady=self._s(4),
+            spacing1=self._s(2), spacing2=self._s(1), spacing3=self._s(2),
         )
         vsb.config(command=txt.yview)
-        hsb.config(command=txt.xview)
         txt.pack(fill="both", expand=True)
 
-        # Tag creation order matters: later = higher priority.
-        # Row-bg tags first (lower priority) → chip tags override them.
-        txt.tag_config("odd",      background="#f0f4f8")
-        txt.tag_config("even",     background=COL_CARD)
-        txt.tag_config("ts",       foreground="#2563eb",
-                       font=("Segoe UI", self._f(9)), lmargin1=self._s(8))
-        txt.tag_config("fk",       background="#dde1e7", foreground="#374151",
+        # ── Tags  (lower priority → higher priority order) ────────────────
+        # Card backgrounds
+        txt.tag_config("card_odd",   background="white",   relief="flat",
+                       lmargin1=IL, lmargin2=FL, rmargin=self._s(8),
+                       spacing1=self._s(8), spacing3=self._s(10))
+        txt.tag_config("card_even",  background="#f0f6ff",  relief="flat",
+                       lmargin1=IL, lmargin2=FL, rmargin=self._s(8),
+                       spacing1=self._s(8), spacing3=self._s(10))
+        # Timestamp line
+        txt.tag_config("ts_hdr",     foreground="#1e40af",
+                       font=("Segoe UI", self._f(10), "bold"),
+                       lmargin1=IL, spacing1=self._s(10))
+        # Field indent
+        txt.tag_config("fl",         lmargin1=FL, lmargin2=FL+self._s(8))
+        # Field key chip (gray)
+        txt.tag_config("fk",         background="#e2e8f0", foreground="#475569",
                        font=("Segoe UI", self._f(9), "bold"))
-        txt.tag_config("fv",       foreground=COL_TEXT, font=("Segoe UI", self._f(10)))
-        txt.tag_config("fv_hl",    background="#fef08a", foreground="#1f2937",
+        # Field value
+        txt.tag_config("fv",         foreground="#1e293b",
+                       font=("Segoe UI", self._f(10)))
+        # storeId value highlight (yellow)
+        txt.tag_config("fv_hl",      background="#fef08a", foreground="#1f2937",
                        font=("Segoe UI", self._f(10), "bold"))
-        txt.tag_config("match_hl", background="#f97316", foreground="white",
+        # Message field key (blue chip)
+        txt.tag_config("fk_msg",     background="#dbeafe", foreground="#1d4ed8",
+                       font=("Segoe UI", self._f(9), "bold"))
+        # Message value
+        txt.tag_config("msg_val",    foreground="#334155",
+                       font=("Segoe UI", self._f(10)),
+                       lmargin1=FL, lmargin2=FL+self._s(8))
+        # Search match
+        txt.tag_config("match_hl",   background="#f97316", foreground="white",
                        font=("Segoe UI", self._f(10), "bold"))
 
         return txt
@@ -2427,25 +2434,25 @@ class OPSInfraApp:
 
     # ------------------------------------------------------------------
     def _fill_os_discover(self, txt, hits, error, search="", ascending=False, cnt_lbl=None):
-        """Render hits as OpenSearch-Discover field chips with search + sort + alternating rows."""
-        PRIORITY = ["storeId", "clientId", "store_date", "log_code",
-                    "log_type", "log_subtype", "data.message",
-                    "data.occuringDate", "data.occuringTime"]
+        """Render each hit as a spaced card: timestamp header, key-field row, message row."""
+        # Fields shown on the "summary" chip row (line 2 of each card)
+        TOP = ["storeId", "clientId", "store_date", "log_code", "log_type", "log_subtype"]
+        # Fields that get their own dedicated message row (line 3)
+        MSG_FIELDS = ["data.message", "data.occuringDate", "data.occuringTime"]
         SKIP = {"_id", "_type", "_index", "_score", "timestamp", "@timestamp"}
 
         txt.config(state="normal")
         txt.delete("1.0", "end")
 
         if error:
-            txt.insert("end", f"\n  ⚠  {error}\n", "ts")
+            txt.insert("end", f"\n\n    ⚠  {error}\n", "ts_hdr")
             txt.config(state="disabled")
-            if cnt_lbl: cnt_lbl.config(text="Error")
+            if cnt_lbl:
+                cnt_lbl.config(text="  Error")
             return
 
-        # Sort
         result = list(reversed(hits)) if ascending else list(hits)
 
-        # Filter by search term across all flattened field values
         term = search.strip().lower()
         if term:
             result = [h for h in result
@@ -2454,13 +2461,14 @@ class OPSInfraApp:
 
         n = len(result)
         if cnt_lbl:
-            cnt_lbl.config(text=f"  {n:,} result{'s' if n != 1 else ''}"
-                               + (f"  (filtered from {len(hits):,})" if term and n != len(hits) else ""))
+            suffix = (f"  (filtered from {len(hits):,})"
+                      if term and n != len(hits) else "")
+            cnt_lbl.config(text=f"  {n:,} result{'s' if n != 1 else ''}{suffix}")
 
         if not result:
-            msg = (f"  No results matching '{search}'.\n" if term
-                   else "  No results found for this store in the last 24 h.\n")
-            txt.insert("end", msg, "ts")
+            msg = (f"\n\n    No results matching \"{search}\".\n"
+                   if term else "\n\n    No results found for this store in the last 24 h.\n")
+            txt.insert("end", msg, "ts_hdr")
             txt.config(state="disabled")
             return
 
@@ -2468,29 +2476,46 @@ class OPSInfraApp:
             src  = hit.get("_source", {})
             flat = self._flatten_source(src)
             ts   = _fmt_os_ts(flat.get("timestamp") or flat.get("@timestamp") or "")
-            rtag = "odd" if i % 2 else "even"
+            ctag = "card_odd" if i % 2 else "card_even"
 
-            line_start = txt.index("end")
+            card_start = txt.index("end")
 
-            # Timestamp (tab-stop aligns to _source column)
-            txt.insert("end", f"  {ts}\t", "ts")
+            # ── Line 1: Timestamp header ──────────────────────────────
+            txt.insert("end", f"  {ts}\n", "ts_hdr")
 
-            # Priority fields first, then remainder
-            ordered = [(k, flat[k]) for k in PRIORITY if k in flat and k not in SKIP]
-            ordered += [(k, v) for k, v in flat.items()
-                        if k not in PRIORITY and k not in SKIP]
+            # ── Line 2: Top key fields as chips ───────────────────────
+            top_pairs = [(k, flat[k]) for k in TOP if k in flat and k not in SKIP]
+            if top_pairs:
+                txt.insert("end", "  ", "fl")
+                for k, v in top_pairs:
+                    txt.insert("end", f" {k} ", "fk")
+                    ftag = "fv_hl" if k == "storeId" else "fv"
+                    txt.insert("end", f"  {v}   ", ftag)
+                txt.insert("end", "\n")
 
-            for k, v in ordered:
-                txt.insert("end", f" {k}: ", "fk")
-                ftag = "fv_hl" if k == "storeId" else "fv"
-                txt.insert("end", str(v) + "  ", ftag)
+            # ── Line 3+: Message / date / time fields ─────────────────
+            for mf in MSG_FIELDS:
+                if mf in flat:
+                    txt.insert("end", "  ", "fl")
+                    txt.insert("end", f" {mf} ", "fk_msg")
+                    txt.insert("end", f"   {flat[mf]}\n", "msg_val")
 
-            txt.insert("end", "\n")
+            # ── Remaining fields (any not yet shown) ──────────────────
+            shown = set(TOP + MSG_FIELDS) | SKIP
+            rest  = [(k, v) for k, v in flat.items() if k not in shown]
+            if rest:
+                txt.insert("end", "  ", "fl")
+                for k, v in rest:
+                    txt.insert("end", f" {k} ", "fk")
+                    txt.insert("end", f"  {v}   ", "fv")
+                txt.insert("end", "\n")
 
-            # Apply alternating row background over the full line
-            txt.tag_add(rtag, line_start, txt.index("end"))
+            txt.insert("end", "\n")   # breathing room after each card
 
-        # Highlight every occurrence of the search term
+            # Tint entire card block
+            txt.tag_add(ctag, card_start, txt.index("end"))
+
+        # ── Highlight every search match ──────────────────────────────
         if term:
             pos = "1.0"
             while True:
