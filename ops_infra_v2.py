@@ -31,7 +31,6 @@ import subprocess
 import time
 import re
 import os
-import sys
 from concurrent.futures import ThreadPoolExecutor
 
 # Suppress console flashes from subprocess calls when running as a no-console EXE
@@ -63,52 +62,15 @@ except ImportError:
 
 
 # ===========================================================================
-# DASHBOARD API CONFIG
-# Priority: config.json next to EXE  >  config.json bundled inside EXE
+# CREDENTIALS  (baked into the EXE — no external config file needed)
 # ===========================================================================
-def _config_path():
-    if getattr(sys, "frozen", False):
-        # User can always override by placing config.json next to the EXE
-        user_cfg = os.path.join(os.path.dirname(sys.executable), "config.json")
-        if os.path.exists(user_cfg):
-            return user_cfg
-        # Fall back to the config bundled into the EXE by PyInstaller (--add-data)
-        return os.path.join(sys._MEIPASS, "config.json")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+DASHBOARD_BASE_URL  = "https://dashboard-api.tangoeye.ai"
+DASHBOARD_TOKEN     = "912347ba-72eb-48f2-9e70-23301d2f1eb4"
+AUTH_STYLE          = "bearer"
 
-_DEFAULT_CONFIG = {
-    "dashboard_base_url":   "https://dashboard-api.tangoeye.ai",
-    "dashboard_token":      "",
-    "auth_style":           "bearer",
-    "opensearch_url":       "",
-    "opensearch_user":      "",
-    "opensearch_password":  "",
-}
-
-def _load_config():
-    path = _config_path()
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8-sig") as fh:
-                data = json.load(fh)
-            merged = dict(_DEFAULT_CONFIG)
-            merged.update({k: v for k, v in data.items() if k in _DEFAULT_CONFIG})
-            return merged
-        except Exception:
-            pass
-    # Only write a template when running as a plain script (not frozen EXE)
-    if not getattr(sys, "frozen", False):
-        try:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(_DEFAULT_CONFIG, fh, indent=2)
-        except Exception:
-            pass
-    return dict(_DEFAULT_CONFIG)
-
-_cfg               = _load_config()
-DASHBOARD_BASE_URL = _cfg["dashboard_base_url"]
-DASHBOARD_TOKEN    = _cfg["dashboard_token"]
-AUTH_STYLE         = _cfg["auth_style"]
+OPENSEARCH_URL      = "https://search-tango-prod-7dsufau4cxzttx6yt7dqc3rzme.ap-south-1.es.amazonaws.com"
+OPENSEARCH_USER     = "ravi"
+OPENSEARCH_PASSWORD = "T@ng0#2024"
 
 CAMERA_ENDPOINT = ("/v3/edgeapp/getAllCameraStreamData"
                    "?storeId={store_id}&date={date}"
@@ -210,11 +172,9 @@ def fetch_store_cameras(store_id):
 # ===========================================================================
 def fetch_opensearch_logs(store_id, index, hours=24):
     """Query OpenSearch for store logs from the given index over the last `hours` hours."""
-    os_url  = (_cfg.get("opensearch_url") or "").rstrip("/")
-    os_user = _cfg.get("opensearch_user") or ""
-    os_pass = _cfg.get("opensearch_password") or ""
-    if not os_url:
-        return [], "opensearch_url not configured in config.json"
+    os_url  = OPENSEARCH_URL.rstrip("/")
+    os_user = OPENSEARCH_USER
+    os_pass = OPENSEARCH_PASSWORD
     endpoint = f"{os_url}/{index}/_search"
     query = {
         "size": 500,

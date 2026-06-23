@@ -24,22 +24,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write config.json from secret
-        shell: pwsh
-        run: |
-          $cfg = [ordered]@{
-            dashboard_base_url  = "https://dashboard-api.tangoeye.ai"
-            dashboard_token     = "${{ secrets.DASHBOARD_TOKEN }}"
-            auth_style          = "bearer"
-            opensearch_url      = "${{ secrets.OPENSEARCH_URL }}"
-            opensearch_user     = "${{ secrets.OPENSEARCH_USER }}"
-            opensearch_password = "${{ secrets.OPENSEARCH_PASSWORD }}"
-          }
-          $json = $cfg | ConvertTo-Json
-          [System.IO.File]::WriteAllText("$PWD\config.json", $json, [System.Text.UTF8Encoding]::new($false))
-
       - name: Build EXE
-        run: python -m PyInstaller --onefile --noconsole --name ops_infra --add-data "config.json;." ops_infra_v2.py
+        run: python -m PyInstaller --onefile --noconsole --name ops_infra ops_infra_v2.py
 
       - name: Generate release tag
         id: tag
