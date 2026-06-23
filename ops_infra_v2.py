@@ -2207,6 +2207,7 @@ class OPSInfraApp:
     # TAB 8: OpenSearch Logs — edgeapp_systemlogs* + diagnostic_check_results
     # ------------------------------------------------------------------
     def _build_opensearch_tab(self, parent):
+        # ── control bar ──────────────────────────────────────────────────
         ctrl_card = tk.Frame(parent, bg=COL_CARD,
                              highlightbackground=COL_BORDER, highlightthickness=1)
         ctrl_card.pack(fill="x", padx=self._s(14), pady=(self._s(14), self._s(6)))
@@ -2231,64 +2232,84 @@ class OPSInfraApp:
             command=self._refresh_opensearch_logs)
         self._os_refresh_btn.pack(side="right")
 
+        # ── sub-notebook ─────────────────────────────────────────────────
         os_nb = ttk.Notebook(parent)
         os_nb.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
         self._os_nb = os_nb
 
-        def _make_os_tree(frame, cols, headings, widths, anchors, proportions):
-            wrap = tk.Frame(frame, bg=COL_CARD)
-            wrap.pack(fill="both", expand=True, padx=self._s(8), pady=self._s(8))
-            sb = ttk.Scrollbar(wrap, orient="vertical")
-            sb.pack(side="right", fill="y")
-            tv = ttk.Treeview(wrap, columns=cols, show="headings", yscrollcommand=sb.set)
-            sb.config(command=tv.yview)
-            tv.pack(fill="both", expand=True)
-            for c in cols:
-                tv.heading(c, text=headings[c], anchor=anchors.get(c, "w"))
-                tv.column(c, width=widths.get(c, self._s(120)),
-                          anchor=anchors.get(c, "w"), stretch=True, minwidth=40)
-            tv.tag_configure("ok",   background="#f0fdf4", foreground="#15803d")
-            tv.tag_configure("warn", background="#fffbeb", foreground="#92400e")
-            tv.tag_configure("bad",  background="#fef2f2", foreground="#b91c1c")
-            tv.tag_configure("info", background="#eff6ff", foreground="#1e40af")
-            self._bind_col_resize(tv, proportions)
-            return tv
-
-        # — edgeapp_systemlogs* sub-tab —
         sys_frame = tk.Frame(os_nb, bg=COL_CARD)
         os_nb.add(sys_frame, text="EdgeApp System Logs")
-        self.os_syslogs_tree = _make_os_tree(
-            sys_frame,
-            cols=("time", "log_type", "log_subtype", "log_code", "message"),
-            headings={"time": "Timestamp", "log_type": "Log Type",
-                      "log_subtype": "Log Subtype", "log_code": "Code",
-                      "message": "Message"},
-            widths={"time": self._s(170), "log_type": self._s(140),
-                    "log_subtype": self._s(160), "log_code": self._s(70),
-                    "message": self._s(420)},
-            anchors={"time": "w", "log_type": "w", "log_subtype": "w",
-                     "log_code": "center", "message": "w"},
-            proportions={"time": 0.17, "log_type": 0.14, "log_subtype": 0.16,
-                         "log_code": 0.07, "message": 0.46},
-        )
-        self.os_syslogs_tree.insert("", "end",
-            values=("", "", "", "", "Run monitoring to load EdgeApp system logs"))
+        self.os_syslogs_txt = self._build_os_discover_panel(sys_frame)
 
-        # — diagnostic_check_results sub-tab —
         diag_frame = tk.Frame(os_nb, bg=COL_CARD)
         os_nb.add(diag_frame, text="Diagnostic Check")
-        self.os_diag_tree = _make_os_tree(
-            diag_frame,
-            cols=("time", "check_name", "status", "details"),
-            headings={"time": "Timestamp", "check_name": "Check / Type",
-                      "status": "Status", "details": "Details"},
-            widths={"time": self._s(170), "check_name": self._s(180),
-                    "status": self._s(120), "details": self._s(500)},
-            anchors={"time": "w", "check_name": "w", "status": "w", "details": "w"},
-            proportions={"time": 0.17, "check_name": 0.18, "status": 0.12, "details": 0.53},
+        self.os_diag_txt = self._build_os_discover_panel(diag_frame)
+
+    # ------------------------------------------------------------------
+    def _build_os_discover_panel(self, parent):
+        """Build an OpenSearch Discover-style panel: Time column + field-chip _source."""
+        TS_PX = self._s(178)   # pixel width of the timestamp column
+
+        # Column header row (mimics OpenSearch Discover header)
+        hdr = tk.Frame(parent, bg="#eef2f7",
+                       highlightbackground=COL_BORDER, highlightthickness=1)
+        hdr.pack(fill="x", padx=self._s(6), pady=(self._s(6), 0))
+        tk.Label(hdr, text="  Time", bg="#eef2f7", fg=COL_MUTED,
+                 font=("Segoe UI", self._f(9), "bold"),
+                 width=22, anchor="w").pack(side="left", pady=self._s(5))
+        tk.Frame(hdr, bg=COL_BORDER, width=1).pack(side="left", fill="y",
+                                                    pady=self._s(3), padx=(0, self._s(4)))
+        tk.Label(hdr, text="_source", bg="#eef2f7", fg=COL_MUTED,
+                 font=("Segoe UI", self._f(9), "bold")).pack(side="left", pady=self._s(5))
+
+        # Text widget + vertical scrollbar
+        frame = tk.Frame(parent, bg=COL_CARD,
+                         highlightbackground=COL_BORDER, highlightthickness=1)
+        frame.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
+        vsb = ttk.Scrollbar(frame, orient="vertical")
+        vsb.pack(side="right", fill="y")
+
+        txt = tk.Text(
+            frame, wrap="word", bg=COL_CARD, fg=COL_TEXT,
+            font=("Segoe UI", self._f(10)),
+            yscrollcommand=vsb.set,
+            relief="flat", bd=0, cursor="arrow",
+            state="disabled",
+            spacing1=self._s(5), spacing3=self._s(5),
+            tabs=(TS_PX,),
         )
-        self.os_diag_tree.insert("", "end",
-            values=("", "", "", "Run monitoring to load diagnostic check results"))
+        vsb.config(command=txt.yview)
+        txt.pack(fill="both", expand=True)
+
+        # ── tag styles ────────────────────────────────────────────────────
+        txt.tag_config("ts",
+                       foreground="#2563eb",
+                       font=("Segoe UI", self._f(9)),
+                       lmargin1=self._s(8),
+                       lmargin2=TS_PX + self._s(6))
+        # gray chip: field key
+        txt.tag_config("fk",
+                       background="#e5e7eb",
+                       foreground="#374151",
+                       font=("Segoe UI", self._f(9), "bold"),
+                       lmargin2=TS_PX + self._s(6))
+        # normal field value
+        txt.tag_config("fv",
+                       foreground=COL_TEXT,
+                       font=("Segoe UI", self._f(10)),
+                       lmargin2=TS_PX + self._s(6))
+        # highlighted value (storeId → yellow background like OpenSearch)
+        txt.tag_config("fv_hl",
+                       background="#fef08a",
+                       foreground="#1f2937",
+                       font=("Segoe UI", self._f(10), "bold"),
+                       lmargin2=TS_PX + self._s(6))
+        # thin separator line between rows
+        txt.tag_config("sep",
+                       foreground="#e2e8f0",
+                       font=("Segoe UI", 2))
+
+        return txt
 
     # ------------------------------------------------------------------
     def _refresh_opensearch_logs(self):
@@ -2298,12 +2319,8 @@ class OPSInfraApp:
             return
         self._os_refresh_btn.config(state="disabled")
         self._os_status.config(text="Fetching…", fg=COL_AMBER)
-        self.os_syslogs_tree.delete(*self.os_syslogs_tree.get_children())
-        self.os_diag_tree.delete(*self.os_diag_tree.get_children())
-        self.os_syslogs_tree.insert("", "end",
-            values=("", "", "", "", "Fetching from OpenSearch…"))
-        self.os_diag_tree.insert("", "end",
-            values=("", "", "", "Fetching from OpenSearch…"))
+        self._os_txt_set(self.os_syslogs_txt, "  Fetching from OpenSearch…")
+        self._os_txt_set(self.os_diag_txt,    "  Fetching from OpenSearch…")
 
         def _worker():
             sys_hits,  sys_err  = fetch_opensearch_logs(store_id, "edgeapp_systemlogs*")
@@ -2314,72 +2331,31 @@ class OPSInfraApp:
         threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _os_txt_set(txt, message):
+        txt.config(state="normal")
+        txt.delete("1.0", "end")
+        txt.insert("end", message)
+        txt.config(state="disabled")
+
+    @staticmethod
+    def _flatten_source(d, prefix=""):
+        """Recursively flatten a nested dict: {'data': {'msg': 'x'}} → {'data.msg': 'x'}"""
+        out = {}
+        for k, v in (d.items() if isinstance(d, dict) else []):
+            key = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                out.update(OPSInfraApp._flatten_source(v, key))
+            else:
+                out[key] = v
+        return out
+
+    # ------------------------------------------------------------------
     def _populate_opensearch_trees(self, sys_hits, sys_err, diag_hits, diag_err):
         self._os_refresh_btn.config(state="normal")
 
-        # — edgeapp_systemlogs —
-        self.os_syslogs_tree.delete(*self.os_syslogs_tree.get_children())
-        if sys_err:
-            self.os_syslogs_tree.insert("", "end",
-                values=("", "", "", "", f"Error: {sys_err}"))
-        elif not sys_hits:
-            self.os_syslogs_tree.insert("", "end",
-                values=("", "", "", "", "No logs found for this store in the last 24 h"))
-        else:
-            for hit in sys_hits:
-                src = hit.get("_source", {})
-                ts  = _fmt_os_ts(src.get("timestamp") or src.get("@timestamp"))
-                if not ts:
-                    od = src.get("data", {}).get("occuringDate") or src.get("occuringDate", "")
-                    ot = src.get("data", {}).get("occuringTime") or src.get("occuringTime", "")
-                    ts = f"{od} {ot}".strip()
-                log_type    = src.get("log_type") or src.get("logType", "")
-                log_subtype = src.get("log_subtype") or src.get("logSubtype", "")
-                log_code    = str(src.get("log_code") or src.get("logCode") or "")
-                data_obj    = src.get("data") or {}
-                if isinstance(data_obj, dict):
-                    message = (data_obj.get("message") or data_obj.get("msg")
-                               or data_obj.get("occuringMessage") or "")
-                else:
-                    message = str(data_obj)
-                if not message:
-                    message = src.get("message") or src.get("msg") or ""
-                self.os_syslogs_tree.insert("", "end", tags=("info",),
-                    values=(ts, log_type, log_subtype, log_code, message))
-
-        # — diagnostic_check_results —
-        self.os_diag_tree.delete(*self.os_diag_tree.get_children())
-        if diag_err:
-            self.os_diag_tree.insert("", "end",
-                values=("", "", "", f"Error: {diag_err}"))
-        elif not diag_hits:
-            self.os_diag_tree.insert("", "end",
-                values=("", "", "", "No diagnostic results found for this store in the last 24 h"))
-        else:
-            for hit in diag_hits:
-                src        = hit.get("_source", {})
-                ts         = _fmt_os_ts(src.get("timestamp") or src.get("@timestamp")
-                                        or src.get("createdAt"))
-                check_name = (src.get("checkName") or src.get("check_name")
-                              or src.get("log_subtype") or src.get("type") or src.get("name") or "")
-                status_val = (src.get("status") or src.get("result")
-                              or src.get("log_type") or "")
-                data_obj   = src.get("data") or {}
-                if isinstance(data_obj, dict):
-                    details = (data_obj.get("message") or data_obj.get("details") or "")
-                elif data_obj:
-                    details = str(data_obj)[:300]
-                else:
-                    details = ""
-                if not details:
-                    details = (src.get("message") or src.get("details")
-                               or src.get("description") or "")
-                sv_lower = str(status_val).lower()
-                tag = ("ok"  if sv_lower in ("ok", "pass", "passed", "success", "true", "online", "up")
-                       else "bad" if sv_lower in ("fail", "failed", "error", "false", "offline", "down")
-                       else "info")
-                self.os_diag_tree.insert("", "end", tags=(tag,),
-                    values=(ts, check_name, status_val, details))
+        self._fill_os_discover(self.os_syslogs_txt, sys_hits, sys_err)
+        self._fill_os_discover(self.os_diag_txt,    diag_hits, diag_err)
 
         total  = len(sys_hits) + len(diag_hits)
         errors = [e for e in (sys_err, diag_err) if e]
@@ -2391,6 +2367,59 @@ class OPSInfraApp:
                       f"{len(diag_hits)} diagnostic results"),
                 fg=COL_GREEN)
         self.notebook.tab(8, text=f"OpenSearch Logs ({total})")
+
+    # ------------------------------------------------------------------
+    def _fill_os_discover(self, txt, hits, error):
+        """Render OpenSearch hits into a Text widget as Discover-style field chips."""
+        # Fields shown first (in this order), matching the OpenSearch Discover screenshot
+        PRIORITY = [
+            "storeId", "clientId", "store_date", "log_code",
+            "log_type", "log_subtype", "data.message",
+            "data.occuringDate", "data.occuringTime", "timestamp",
+        ]
+        SKIP = {"_id", "_type", "_index", "_score", "timestamp", "@timestamp"}
+
+        txt.config(state="normal")
+        txt.delete("1.0", "end")
+
+        if error:
+            txt.insert("end", f"\n  ⚠  {error}\n", "ts")
+            txt.config(state="disabled")
+            return
+        if not hits:
+            txt.insert("end", "\n  No results found for this store in the last 24 h.\n", "ts")
+            txt.config(state="disabled")
+            return
+
+        for i, hit in enumerate(hits):
+            src  = hit.get("_source", {})
+            flat = self._flatten_source(src)
+
+            ts = _fmt_os_ts(flat.get("timestamp") or flat.get("@timestamp") or "")
+
+            # Thin separator between rows (skip before first row)
+            if i > 0:
+                txt.insert("end", "─" * 180 + "\n", "sep")
+
+            # Timestamp in the left "column" (tab-aligned)
+            txt.insert("end", f"  {ts}\t", "ts")
+
+            # Priority fields first, then remaining (skip internal ES fields)
+            ordered = [(k, flat[k]) for k in PRIORITY if k in flat and k not in SKIP]
+            ordered += [
+                (k, v) for k, v in flat.items()
+                if k not in PRIORITY and k not in SKIP
+            ]
+
+            for k, v in ordered:
+                val_str = str(v)
+                txt.insert("end", f" {k}: ", "fk")
+                tag = "fv_hl" if k == "storeId" else "fv"
+                txt.insert("end", val_str + " ", tag)
+
+            txt.insert("end", "\n")
+
+        txt.config(state="disabled")
 
     # ------------------------------------------------------------------
     def _build_footer(self, parent):
