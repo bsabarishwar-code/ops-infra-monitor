@@ -2235,17 +2235,17 @@ class OPSInfraApp:
                      "sv": tk.StringVar(), "cnt_lbl": None},
         }
 
-        # ── resizable PanedWindow (drag the sash between the two panels) ──
-        paned = ttk.PanedWindow(parent, orient="vertical")
-        paned.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
+        # ── Sub-notebook: one tab per index ──────────────────────────────
+        os_nb = ttk.Notebook(parent)
+        os_nb.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
 
-        sys_frm = tk.Frame(paned, bg=COL_CARD)
-        paned.add(sys_frm, weight=1)
+        sys_frm = tk.Frame(os_nb, bg=COL_CARD)
+        os_nb.add(sys_frm, text="EdgeApp System Logs")
         self.os_syslogs_txt = self._build_os_panel(
             sys_frm, "EdgeApp System Logs  (edgeapp_systemlogs*)", "sys")
 
-        diag_frm = tk.Frame(paned, bg=COL_CARD)
-        paned.add(diag_frm, weight=1)
+        diag_frm = tk.Frame(os_nb, bg=COL_CARD)
+        os_nb.add(diag_frm, text="Diagnostic Check")
         self.os_diag_txt = self._build_os_panel(
             diag_frm, "Diagnostic Check  (diagnostic_check_results)", "diag")
 
