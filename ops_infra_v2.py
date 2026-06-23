@@ -77,9 +77,12 @@ def _config_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 _DEFAULT_CONFIG = {
-    "dashboard_base_url": "https://dashboard-api.tangoeye.ai",
-    "dashboard_token":    "",
-    "auth_style":         "bearer",
+    "dashboard_base_url":   "https://dashboard-api.tangoeye.ai",
+    "dashboard_token":      "",
+    "auth_style":           "bearer",
+    "opensearch_url":       "",
+    "opensearch_user":      "",
+    "opensearch_password":  "",
 }
 
 def _load_config():
@@ -200,6 +203,60 @@ def fetch_store_cameras(store_id):
     if not cameras:
         return [], "Cameras were returned but none are active / have an IP."
     return cameras, None
+
+
+# ===========================================================================
+# OPENSEARCH
+# ===========================================================================
+def fetch_opensearch_logs(store_id, index, hours=24):
+    """Query OpenSearch for store logs from the given index over the last `hours` hours."""
+    os_url  = (_cfg.get("opensearch_url") or "").rstrip("/")
+    os_user = _cfg.get("opensearch_user") or ""
+    os_pass = _cfg.get("opensearch_password") or ""
+    if not os_url:
+        return [], "opensearch_url not configured in config.json"
+    endpoint = f"{os_url}/{index}/_search"
+    query = {
+        "size": 500,
+        "sort": [{"timestamp": {"order": "desc", "unmapped_type": "date"}}],
+        "query": {
+            "bool": {
+                "must": [
+                    {"term": {"storeId.keyword": store_id}},
+                ],
+                "filter": [
+                    {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+                ],
+            }
+        },
+    }
+    auth = (os_user, os_pass) if os_user else None
+    try:
+        resp = requests.post(
+            endpoint, json=query, auth=auth,
+            headers={"Content-Type": "application/json"},
+            timeout=REQUEST_TIMEOUT, verify=False,
+        )
+        if resp.status_code != 200:
+            return [], f"OpenSearch {resp.status_code}: {resp.text[:300]}"
+        return resp.json().get("hits", {}).get("hits", []), None
+    except requests.exceptions.RequestException as e:
+        return [], f"OpenSearch request failed: {e}"
+    except ValueError:
+        return [], "OpenSearch did not return valid JSON"
+
+
+def _fmt_os_ts(ts):
+    """Format an OpenSearch timestamp (ISO string or epoch-ms int) to a readable string."""
+    if not ts:
+        return ""
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.datetime.fromtimestamp(
+                ts / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(ts)
+    return str(ts)[:19].replace("T", " ")
 
 
 # ===========================================================================
@@ -778,6 +835,124 @@ def check_app_status(cameras):
     }
 
 
+def _parse_network_status_logs(days=2):
+    entries = []
+    today = datetime.date.today()
+    for i in range(days):
+        d = today - datetime.timedelta(days=i)
+        path = os.path.join(STREAM_FOLDER_ROOT, f"NetworkStatus_{d.strftime('%d-%m-%Y')}.txt")
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    line = line.strip()
+                    m = re.match(r"Network is (ONLINE|OFFLINE)\s*-\s*(\d{2}:\d{2}:\d{2})\s*,(\d{2}-\d{2}-\d{4})", line)
+                    if m:
+                        state, hms, dmy = m.groups()
+                        try:
+                            dt = datetime.datetime.strptime(f"{dmy} {hms}", "%d-%m-%Y %H:%M:%S")
+                            entries.append({"time": dt.isoformat(), "status": state})
+                        except Exception:
+                            entries.append({"time": f"{dmy} {hms}", "status": state})
+        except Exception:
+            pass
+    entries.sort(key=lambda x: x.get("time", ""), reverse=True)
+    return entries
+
+
+def _parse_camera_status_logs(days=2):
+    entries = []
+    today = datetime.date.today()
+    for i in range(days):
+        d = today - datetime.timedelta(days=i)
+        path = os.path.join(STREAM_FOLDER_ROOT, f"CameraStatusLogs_{d.strftime('%d-%m-%Y')}.txt")
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    line = line.strip()
+                    m = re.match(
+                        r"Camera IP for the stream (rtsp://[^\s]+)\s+is\s+(UP|DOWN)\s+at\s*:(\d{2}:\d{2}:\d{2})\s*,(\d{2}-\d{2}-\d{4})",
+                        line, re.IGNORECASE)
+                    if m:
+                        rtsp_url, state, hms, dmy = m.groups()
+                        ip_m = re.search(r"@([\d.]+)", rtsp_url)
+                        cam_ip = ip_m.group(1) if ip_m else rtsp_url.split("//")[-1][:30]
+                        try:
+                            dt = datetime.datetime.strptime(f"{dmy} {hms}", "%d-%m-%Y %H:%M:%S")
+                            entries.append({"time": dt.isoformat(), "ip": cam_ip, "status": state.upper()})
+                        except Exception:
+                            entries.append({"time": f"{dmy} {hms}", "ip": cam_ip, "status": state.upper()})
+        except Exception:
+            pass
+    entries.sort(key=lambda x: x.get("time", ""), reverse=True)
+    return entries
+
+
+def _parse_speed_test_logs(days=2):
+    entries = []
+    today = datetime.date.today()
+    for i in range(days):
+        d = today - datetime.timedelta(days=i)
+        path = os.path.join(STREAM_FOLDER_ROOT, f"speedTestLogs_{d.strftime('%d%m%Y')}.txt")
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    line = line.strip()
+                    m = re.match(r"(\d{2}:\d{2}:\d{2})\s+Upload Speed\s*:\s*([\d.]+)\s*bytes", line)
+                    if m:
+                        hms, speed_bytes = m.groups()
+                        speed_mbps = round(float(speed_bytes) / 1_000_000, 2)
+                        try:
+                            dt = datetime.datetime.combine(d, datetime.time.fromisoformat(hms))
+                            entries.append({"time": dt.isoformat(), "upload_mbps": speed_mbps})
+                        except Exception:
+                            entries.append({"time": f"{d.isoformat()} {hms}", "upload_mbps": speed_mbps})
+        except Exception:
+            pass
+    entries.sort(key=lambda x: x.get("time", ""), reverse=True)
+    return entries
+
+
+def _parse_power_event_logs(days=2):
+    entries = []
+    today = datetime.date.today()
+    for i in range(days):
+        d = today - datetime.timedelta(days=i)
+        path = os.path.join(STREAM_FOLDER_ROOT, f"SystemPowerEvents_{d.strftime('%Y-%m-%d')}.log")
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    line = line.strip()
+                    m = re.match(r"(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2}:\d{2})\s+(\w+)\s+(.*)", line)
+                    if m:
+                        dmy, hms, event, detail = m.groups()
+                        try:
+                            dt = datetime.datetime.strptime(f"{dmy} {hms}", "%d-%m-%Y %H:%M:%S")
+                            entries.append({"time": dt.isoformat(), "event": event.strip(), "detail": detail.strip()})
+                        except Exception:
+                            entries.append({"time": f"{dmy} {hms}", "event": event.strip(), "detail": detail.strip()})
+        except Exception:
+            pass
+    entries.sort(key=lambda x: x.get("time", ""), reverse=True)
+    return entries
+
+
+def check_system_logs():
+    return {
+        "internet":  _parse_network_status_logs(days=2),
+        "cameras":   _parse_camera_status_logs(days=2),
+        "speedtest": _parse_speed_test_logs(days=2),
+        "power":     _parse_power_event_logs(days=2),
+    }
+
+
 def run_complete_monitoring(store_id, cameras):
     with ThreadPoolExecutor(max_workers=max(12, len(cameras) + 8)) as ex:
         cam_futures  = [ex.submit(check_camera, c) for c in cameras]
@@ -789,6 +964,7 @@ def run_complete_monitoring(store_id, cameras):
         f_wifi       = ex.submit(get_wifi_change_logs, 24)
         f_sleep      = ex.submit(get_sleep_wake_logs, 24)
         f_app        = ex.submit(check_app_status, cameras)
+        f_syslogs    = ex.submit(check_system_logs)
 
         camera_results = [f.result() for f in cam_futures]
         internet       = f_internet.result()
@@ -799,6 +975,7 @@ def run_complete_monitoring(store_id, cameras):
         wifi_changes   = f_wifi.result()
         sleep_logs     = f_sleep.result()
         app_status     = f_app.result()
+        system_logs    = f_syslogs.result()
 
     return {
         "store_id":       store_id,
@@ -812,6 +989,7 @@ def run_complete_monitoring(store_id, cameras):
         "sleep_logs":     sleep_logs,
         "cameras":        camera_results,
         "app_status":     app_status,
+        "system_logs":    system_logs,
         "summary": {
             "total_cameras":   len(camera_results),
             "cameras_passing": sum(1 for c in camera_results if c["ping"] == "OK"),
@@ -1296,6 +1474,14 @@ class OPSInfraApp:
         app_tab = tk.Frame(nb, bg=COL_CARD)
         nb.add(app_tab, text="App Status")
         self._build_appstatus_tab(app_tab)
+
+        syslogs_tab = tk.Frame(nb, bg=COL_CARD)
+        nb.add(syslogs_tab, text="System Logs (2d)")
+        self._build_syslogs_tab(syslogs_tab)
+
+        os_tab = tk.Frame(nb, bg=COL_CARD)
+        nb.add(os_tab, text="OpenSearch Logs")
+        self._build_opensearch_tab(os_tab)
 
     # ------------------------------------------------------------------
     # TAB 0: Camera Status — ping only + offline reason
@@ -1988,6 +2174,265 @@ class OPSInfraApp:
                                "last_modified":0.20,"recent":0.10,"total":0.08})
 
     # ------------------------------------------------------------------
+    def _build_syslogs_tab(self, parent):
+        nb = ttk.Notebook(parent)
+        nb.pack(fill="both", expand=True, padx=self._s(6), pady=self._s(6))
+        self._syslogs_nb = nb
+
+        def _make_tree(frame, cols, headings, widths, anchors):
+            wrap = tk.Frame(frame, bg=COL_CARD)
+            wrap.pack(fill="both", expand=True, padx=self._s(8), pady=self._s(8))
+            sb = ttk.Scrollbar(wrap, orient="vertical")
+            sb.pack(side="right", fill="y")
+            tv = ttk.Treeview(wrap, columns=cols, show="headings", yscrollcommand=sb.set)
+            sb.config(command=tv.yview)
+            tv.pack(fill="both", expand=True)
+            for c in cols:
+                tv.heading(c, text=headings[c], anchor=anchors[c])
+                tv.column(c, width=widths[c], anchor=anchors[c], stretch=True, minwidth=40)
+            tv.tag_configure("ok",   background="#f0fdf4", foreground="#15803d")
+            tv.tag_configure("warn", background="#fffbeb", foreground="#92400e")
+            tv.tag_configure("bad",  background="#fef2f2", foreground="#b91c1c")
+            return tv
+
+        # --- Internet connectivity ---
+        inet_frame = tk.Frame(nb, bg=COL_CARD)
+        nb.add(inet_frame, text="Internet")
+        self.syslog_inet_tree = _make_tree(
+            inet_frame,
+            cols=("time", "status"),
+            headings={"time": "Timestamp", "status": "Status"},
+            widths={"time": self._s(200), "status": self._s(120)},
+            anchors={"time": "w", "status": "w"},
+        )
+        self.syslog_inet_tree.insert("", "end", values=("", "Run monitoring to load internet logs"))
+
+        # --- Camera status ---
+        cam_frame = tk.Frame(nb, bg=COL_CARD)
+        nb.add(cam_frame, text="Camera Events")
+        self.syslog_cam_tree = _make_tree(
+            cam_frame,
+            cols=("time", "ip", "status"),
+            headings={"time": "Timestamp", "ip": "Camera IP", "status": "Status"},
+            widths={"time": self._s(200), "ip": self._s(160), "status": self._s(100)},
+            anchors={"time": "w", "ip": "w", "status": "w"},
+        )
+        self.syslog_cam_tree.insert("", "end", values=("", "", "Run monitoring to load camera logs"))
+
+        # --- Speed test ---
+        speed_frame = tk.Frame(nb, bg=COL_CARD)
+        nb.add(speed_frame, text="Speed Tests")
+        self.syslog_speed_tree = _make_tree(
+            speed_frame,
+            cols=("time", "upload_mbps"),
+            headings={"time": "Timestamp", "upload_mbps": "Upload (Mbps)"},
+            widths={"time": self._s(200), "upload_mbps": self._s(140)},
+            anchors={"time": "w", "upload_mbps": "center"},
+        )
+        self.syslog_speed_tree.insert("", "end", values=("", "Run monitoring to load speed logs"))
+
+        # --- Power events ---
+        power_frame = tk.Frame(nb, bg=COL_CARD)
+        nb.add(power_frame, text="Power Events")
+        self.syslog_power_tree = _make_tree(
+            power_frame,
+            cols=("time", "event", "detail"),
+            headings={"time": "Timestamp", "event": "Event", "detail": "Detail"},
+            widths={"time": self._s(200), "event": self._s(100), "detail": self._s(500)},
+            anchors={"time": "w", "event": "w", "detail": "w"},
+        )
+        self.syslog_power_tree.insert("", "end", values=("", "", "Run monitoring to load power events"))
+
+    # ------------------------------------------------------------------
+    # TAB 8: OpenSearch Logs — edgeapp_systemlogs* + diagnostic_check_results
+    # ------------------------------------------------------------------
+    def _build_opensearch_tab(self, parent):
+        ctrl_card = tk.Frame(parent, bg=COL_CARD,
+                             highlightbackground=COL_BORDER, highlightthickness=1)
+        ctrl_card.pack(fill="x", padx=self._s(14), pady=(self._s(14), self._s(6)))
+        ctrl = tk.Frame(ctrl_card, bg=COL_CARD)
+        ctrl.pack(fill="x", padx=self._s(14), pady=self._s(10))
+
+        tk.Label(ctrl, text="OpenSearch Logs  (last 24 h)",
+                 bg=COL_CARD, fg=COL_TEXT,
+                 font=("Segoe UI", self._f(11), "bold")).pack(side="left")
+
+        self._os_status = tk.Label(
+            ctrl, text="Enter a Store ID and click Run Monitoring or Refresh",
+            bg=COL_CARD, fg=COL_MUTED, font=("Segoe UI", 9))
+        self._os_status.pack(side="left", padx=self._s(14))
+
+        self._os_refresh_btn = tk.Button(
+            ctrl, text="↺  Refresh",
+            font=("Segoe UI", self._f(10), "bold"),
+            bg=COL_ACCENT, fg="white", activebackground="#1d4ed8",
+            activeforeground="white", relief="flat", bd=0,
+            padx=self._s(14), pady=self._s(5), cursor="hand2",
+            command=self._refresh_opensearch_logs)
+        self._os_refresh_btn.pack(side="right")
+
+        os_nb = ttk.Notebook(parent)
+        os_nb.pack(fill="both", expand=True, padx=self._s(6), pady=(0, self._s(6)))
+        self._os_nb = os_nb
+
+        def _make_os_tree(frame, cols, headings, widths, anchors, proportions):
+            wrap = tk.Frame(frame, bg=COL_CARD)
+            wrap.pack(fill="both", expand=True, padx=self._s(8), pady=self._s(8))
+            sb = ttk.Scrollbar(wrap, orient="vertical")
+            sb.pack(side="right", fill="y")
+            tv = ttk.Treeview(wrap, columns=cols, show="headings", yscrollcommand=sb.set)
+            sb.config(command=tv.yview)
+            tv.pack(fill="both", expand=True)
+            for c in cols:
+                tv.heading(c, text=headings[c], anchor=anchors.get(c, "w"))
+                tv.column(c, width=widths.get(c, self._s(120)),
+                          anchor=anchors.get(c, "w"), stretch=True, minwidth=40)
+            tv.tag_configure("ok",   background="#f0fdf4", foreground="#15803d")
+            tv.tag_configure("warn", background="#fffbeb", foreground="#92400e")
+            tv.tag_configure("bad",  background="#fef2f2", foreground="#b91c1c")
+            tv.tag_configure("info", background="#eff6ff", foreground="#1e40af")
+            self._bind_col_resize(tv, proportions)
+            return tv
+
+        # — edgeapp_systemlogs* sub-tab —
+        sys_frame = tk.Frame(os_nb, bg=COL_CARD)
+        os_nb.add(sys_frame, text="EdgeApp System Logs")
+        self.os_syslogs_tree = _make_os_tree(
+            sys_frame,
+            cols=("time", "log_type", "log_subtype", "log_code", "message"),
+            headings={"time": "Timestamp", "log_type": "Log Type",
+                      "log_subtype": "Log Subtype", "log_code": "Code",
+                      "message": "Message"},
+            widths={"time": self._s(170), "log_type": self._s(140),
+                    "log_subtype": self._s(160), "log_code": self._s(70),
+                    "message": self._s(420)},
+            anchors={"time": "w", "log_type": "w", "log_subtype": "w",
+                     "log_code": "center", "message": "w"},
+            proportions={"time": 0.17, "log_type": 0.14, "log_subtype": 0.16,
+                         "log_code": 0.07, "message": 0.46},
+        )
+        self.os_syslogs_tree.insert("", "end",
+            values=("", "", "", "", "Run monitoring to load EdgeApp system logs"))
+
+        # — diagnostic_check_results sub-tab —
+        diag_frame = tk.Frame(os_nb, bg=COL_CARD)
+        os_nb.add(diag_frame, text="Diagnostic Check")
+        self.os_diag_tree = _make_os_tree(
+            diag_frame,
+            cols=("time", "check_name", "status", "details"),
+            headings={"time": "Timestamp", "check_name": "Check / Type",
+                      "status": "Status", "details": "Details"},
+            widths={"time": self._s(170), "check_name": self._s(180),
+                    "status": self._s(120), "details": self._s(500)},
+            anchors={"time": "w", "check_name": "w", "status": "w", "details": "w"},
+            proportions={"time": 0.17, "check_name": 0.18, "status": 0.12, "details": 0.53},
+        )
+        self.os_diag_tree.insert("", "end",
+            values=("", "", "", "Run monitoring to load diagnostic check results"))
+
+    # ------------------------------------------------------------------
+    def _refresh_opensearch_logs(self):
+        store_id = self.current_store_id or self.store_entry.get().strip()
+        if not store_id:
+            messagebox.showwarning("Store ID required", "Enter a Store ID first.")
+            return
+        self._os_refresh_btn.config(state="disabled")
+        self._os_status.config(text="Fetching…", fg=COL_AMBER)
+        self.os_syslogs_tree.delete(*self.os_syslogs_tree.get_children())
+        self.os_diag_tree.delete(*self.os_diag_tree.get_children())
+        self.os_syslogs_tree.insert("", "end",
+            values=("", "", "", "", "Fetching from OpenSearch…"))
+        self.os_diag_tree.insert("", "end",
+            values=("", "", "", "Fetching from OpenSearch…"))
+
+        def _worker():
+            sys_hits,  sys_err  = fetch_opensearch_logs(store_id, "edgeapp_systemlogs*")
+            diag_hits, diag_err = fetch_opensearch_logs(store_id, "diagnostic_check_results")
+            self.root.after(0, lambda: self._populate_opensearch_trees(
+                sys_hits, sys_err, diag_hits, diag_err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    def _populate_opensearch_trees(self, sys_hits, sys_err, diag_hits, diag_err):
+        self._os_refresh_btn.config(state="normal")
+
+        # — edgeapp_systemlogs —
+        self.os_syslogs_tree.delete(*self.os_syslogs_tree.get_children())
+        if sys_err:
+            self.os_syslogs_tree.insert("", "end",
+                values=("", "", "", "", f"Error: {sys_err}"))
+        elif not sys_hits:
+            self.os_syslogs_tree.insert("", "end",
+                values=("", "", "", "", "No logs found for this store in the last 24 h"))
+        else:
+            for hit in sys_hits:
+                src = hit.get("_source", {})
+                ts  = _fmt_os_ts(src.get("timestamp") or src.get("@timestamp"))
+                if not ts:
+                    od = src.get("data", {}).get("occuringDate") or src.get("occuringDate", "")
+                    ot = src.get("data", {}).get("occuringTime") or src.get("occuringTime", "")
+                    ts = f"{od} {ot}".strip()
+                log_type    = src.get("log_type") or src.get("logType", "")
+                log_subtype = src.get("log_subtype") or src.get("logSubtype", "")
+                log_code    = str(src.get("log_code") or src.get("logCode") or "")
+                data_obj    = src.get("data") or {}
+                if isinstance(data_obj, dict):
+                    message = (data_obj.get("message") or data_obj.get("msg")
+                               or data_obj.get("occuringMessage") or "")
+                else:
+                    message = str(data_obj)
+                if not message:
+                    message = src.get("message") or src.get("msg") or ""
+                self.os_syslogs_tree.insert("", "end", tags=("info",),
+                    values=(ts, log_type, log_subtype, log_code, message))
+
+        # — diagnostic_check_results —
+        self.os_diag_tree.delete(*self.os_diag_tree.get_children())
+        if diag_err:
+            self.os_diag_tree.insert("", "end",
+                values=("", "", "", f"Error: {diag_err}"))
+        elif not diag_hits:
+            self.os_diag_tree.insert("", "end",
+                values=("", "", "", "No diagnostic results found for this store in the last 24 h"))
+        else:
+            for hit in diag_hits:
+                src        = hit.get("_source", {})
+                ts         = _fmt_os_ts(src.get("timestamp") or src.get("@timestamp")
+                                        or src.get("createdAt"))
+                check_name = (src.get("checkName") or src.get("check_name")
+                              or src.get("log_subtype") or src.get("type") or src.get("name") or "")
+                status_val = (src.get("status") or src.get("result")
+                              or src.get("log_type") or "")
+                data_obj   = src.get("data") or {}
+                if isinstance(data_obj, dict):
+                    details = (data_obj.get("message") or data_obj.get("details") or "")
+                elif data_obj:
+                    details = str(data_obj)[:300]
+                else:
+                    details = ""
+                if not details:
+                    details = (src.get("message") or src.get("details")
+                               or src.get("description") or "")
+                sv_lower = str(status_val).lower()
+                tag = ("ok"  if sv_lower in ("ok", "pass", "passed", "success", "true", "online", "up")
+                       else "bad" if sv_lower in ("fail", "failed", "error", "false", "offline", "down")
+                       else "info")
+                self.os_diag_tree.insert("", "end", tags=(tag,),
+                    values=(ts, check_name, status_val, details))
+
+        total  = len(sys_hits) + len(diag_hits)
+        errors = [e for e in (sys_err, diag_err) if e]
+        if errors:
+            self._os_status.config(text=f"Error: {errors[0]}", fg=COL_RED)
+        else:
+            self._os_status.config(
+                text=(f"Loaded {len(sys_hits)} system logs · "
+                      f"{len(diag_hits)} diagnostic results"),
+                fg=COL_GREEN)
+        self.notebook.tab(8, text=f"OpenSearch Logs ({total})")
+
+    # ------------------------------------------------------------------
     def _build_footer(self, parent):
         bar = tk.Frame(parent, bg=COL_BG)
         bar.pack(fill="x", pady=(self._s(12), 0))
@@ -2230,6 +2675,59 @@ class OPSInfraApp:
         else:
             self.sf_tree.insert("","end",values=("","","","No stream folders found","","",""))
         self.notebook.tab(6, text=f"App Status ({streams_t} streams)")
+
+        # Tab 7: System Logs
+        sl = results.get("system_logs", {})
+        sl_inet   = sl.get("internet",  [])
+        sl_cams   = sl.get("cameras",   [])
+        sl_speed  = sl.get("speedtest", [])
+        sl_power  = sl.get("power",     [])
+
+        self.syslog_inet_tree.delete(*self.syslog_inet_tree.get_children())
+        if sl_inet:
+            for e in sl_inet:
+                t   = (e.get("time","") or "")[:19].replace("T"," ")
+                st  = e.get("status","")
+                tag = "ok" if st == "ONLINE" else "bad"
+                self.syslog_inet_tree.insert("","end", tags=(tag,), values=(t, "● Online" if st=="ONLINE" else "○ Offline"))
+        else:
+            self.syslog_inet_tree.insert("","end", values=("","No internet log files found for the last 2 days"))
+
+        self.syslog_cam_tree.delete(*self.syslog_cam_tree.get_children())
+        if sl_cams:
+            for e in sl_cams:
+                t   = (e.get("time","") or "")[:19].replace("T"," ")
+                st  = e.get("status","")
+                tag = "ok" if st == "UP" else "bad"
+                self.syslog_cam_tree.insert("","end", tags=(tag,), values=(t, e.get("ip","—"), "● UP" if st=="UP" else "○ DOWN"))
+        else:
+            self.syslog_cam_tree.insert("","end", values=("","","No camera log files found for the last 2 days"))
+
+        self.syslog_speed_tree.delete(*self.syslog_speed_tree.get_children())
+        if sl_speed:
+            for e in sl_speed:
+                t     = (e.get("time","") or "")[:19].replace("T"," ")
+                mbps  = e.get("upload_mbps", 0)
+                tag   = "ok" if mbps >= 1.0 else ("warn" if mbps >= 0.2 else "bad")
+                self.syslog_speed_tree.insert("","end", tags=(tag,), values=(t, f"{mbps}"))
+        else:
+            self.syslog_speed_tree.insert("","end", values=("","No speed test log files found for the last 2 days"))
+
+        self.syslog_power_tree.delete(*self.syslog_power_tree.get_children())
+        if sl_power:
+            for e in sl_power:
+                t   = (e.get("time","") or "")[:19].replace("T"," ")
+                ev  = e.get("event","")
+                tag = "warn" if ev.lower() == "sleep" else "ok"
+                self.syslog_power_tree.insert("","end", tags=(tag,), values=(t, ev, e.get("detail","")))
+        else:
+            self.syslog_power_tree.insert("","end", values=("","","No power event log files found for the last 2 days"))
+
+        total_sl = len(sl_inet) + len(sl_cams) + len(sl_speed) + len(sl_power)
+        self.notebook.tab(7, text=f"System Logs ({total_sl})")
+
+        # Tab 8: OpenSearch Logs — fetch asynchronously
+        self._refresh_opensearch_logs()
 
         # Footer
         if total and inet.get("connected") and ping_ok == total and rtsp_ok == total and proc_run:
